@@ -1,0 +1,6 @@
+{
+  "name": "Trelvix AI Video Studio",
+  "description": "A standalone AI Video Studio frontend cloning Trelvix UI with video generation controls, camera motion presets, live rendering pipeline, and media gallery.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
