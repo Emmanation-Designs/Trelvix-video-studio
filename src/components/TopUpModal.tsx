@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, Zap, Check, Sparkles } from 'lucide-react';
+import { authFetch } from '../lib/api';
 
 interface TopUpModalProps {
   isOpen: boolean;
@@ -14,26 +15,24 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const [selectedPlan, setSelectedPlan] = useState<number>(1000);
+  const [selectedPlan, setSelectedPlan] = useState<number>(100);
   const [purchased, setPurchased] = useState(false);
 
   const plans = [
-    { credits: 500, price: '$5', popular: false },
-    { credits: 1000, price: '$9', popular: true },
-    { credits: 2500, price: '$20', popular: false },
-    { credits: 5000, price: '$35', popular: false }
+    { credits: 40, price: '$4.99', popular: false },
+    { credits: 100, price: '$9.99', popular: true },
+    { credits: 220, price: '$19.99', popular: false },
+    { credits: 500, price: '$39.99', popular: false }
   ];
 
   const handlePurchase = async () => {
     setPurchased(true);
     try {
-      const res = await fetch('/api/video-studio/billing/checkout', {
+      const res = await authFetch('/api/video-studio/payments/paypal/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          creditsToAdd: selectedPlan,
-          planTier: 'pro',
-          amountUsd: selectedPlan === 500 ? 5 : selectedPlan === 1000 ? 9 : selectedPlan === 2500 ? 20 : 35
+          packageId: selectedPlan === 40 ? 'pkg-starter' : selectedPlan === 100 ? 'pkg-creator' : selectedPlan === 220 ? 'pkg-studio' : 'pkg-pro-studio',
         })
       });
       const data = await res.json();

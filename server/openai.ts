@@ -7,188 +7,167 @@ interface OpenAiVideoRequestOptions {
   negativePrompt?: string;
   model?: string;
   quality?: string;
-  duration?: string;
+  duration?: string | number;
+  resolution?: string;
   aspectRatio?: string;
+  imageInput?: string;
 }
-
-interface OpenAiVideoJobResponse {
-  id: string;
-  status: 'queued' | 'in_progress' | 'completed' | 'failed';
-  video_url?: string;
-  thumbnail_url?: string;
-  error?: string;
-  progress?: number;
-}
-
-// In-memory job state tracking for fallback/demo mode when OpenAI key isn't provided
-const mockJobsState = new Map<string, {
-  id: string;
-  prompt: string;
-  status: 'queued' | 'in_progress' | 'completed' | 'failed';
-  progress: number;
-  createdAt: number;
-  videoUrl: string;
-  thumbnailUrl: string;
-  duration: string;
-  aspectRatio: string;
-}>();
 
 export async function requestOpenAiVideoGeneration(
   options: OpenAiVideoRequestOptions
 ): Promise<{ providerJobId: string; status: string }> {
-  // If OpenAI API key is set and valid, call official OpenAI Video Generation API
-  if (OPENAI_API_KEY && !OPENAI_API_KEY.includes('your-openai-api-key')) {
-    try {
-      const response = await fetch('https://api.openai.com/v1/videos', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: options.model || 'sora-2',
-          prompt: options.prompt,
-          quality: options.quality || 'creative',
-          duration: options.duration || '6s',
-          aspect_ratio: options.aspectRatio || '16:9'
-        })
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        return {
-          providerJobId: data.id || `video_${Date.now()}`,
-          status: data.status || 'generating'
-        };
-      } else {
-        const errJson = await response.json().catch(() => ({}));
-        console.warn('OpenAI Video API returned error response:', errJson);
-      }
-    } catch (err) {
-      console.warn('OpenAI Video API request failed, falling back to asynchronous generator simulation:', err);
-    }
+  if (!OPENAI_API_KEY || OPENAI_API_KEY.includes('your-openai-api-key')) {
+    throw new Error('OPENAI_API_KEY environment variable is required for real video generation.');
   }
 
-  // Asynchronous generation simulation
-  const jobId = `video_sora2_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  
-  const sampleVideos = [
-    {
-      videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-wild-horse-in-a-field-43285-large.mp4',
-      thumbnailUrl: 'https://images.unsplash.com/photo-1553284965-83fd3e82fa5a?auto=format&fit=crop&q=80&w=800'
-    },
-    {
-      videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-futuristic-city-with-traffic-41551-large.mp4',
-      thumbnailUrl: 'https://images.unsplash.com/photo-1519501025264-65ba15a82390?auto=format&fit=crop&q=80&w=800'
-    },
-    {
-      videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-aerial-view-of-a-foggy-forest-42861-large.mp4',
-      thumbnailUrl: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=800'
-    }
-  ];
+  const qualityMode = (options.quality || '').toLowerCase().includes('super') ? 'super_creative' : 'creative';
+  const durationNum = typeof options.duration === 'number'
+    ? options.duration
+    : parseInt((options.duration || '6s').toString().replace('s', ''), 10) || 6;
 
-  const selectedSample = sampleVideos[Math.floor(Math.random() * sampleVideos.length)];
+  const modelName = qualityMode === 'super_creative' ? 'sora-1.0' : 'sora-1.0-turbo';
 
-  mockJobsState.set(jobId, {
-    id: jobId,
+  const payload: Record<string, any> = {
+    model: options.model || modelName,
     prompt: options.prompt,
-    status: 'in_progress',
-    progress: 15,
-    createdAt: Date.now(),
-    videoUrl: selectedSample.videoUrl,
-    thumbnailUrl: selectedSample.thumbnailUrl,
-    duration: options.duration || '6s',
-    aspectRatio: options.aspectRatio || '16:9'
+    duration: durationNum,
+    resolution: options.resolution || '1080p',
+    aspect_ratio: options.aspectRatio || '16:9',
+  };
+
+  if (options.imageInput) {
+    payload.input_reference_image = options.imageInput;
+  }
+
+  const response = await fetch('https://api.openai.com/v1/videos', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
   });
 
-  return { providerJobId: jobId, status: 'generating' };
+  if (!response.ok) {
+    const errJson = await response.json().catch(() => ({}));
+    const message = errJson.error?.message || `OpenAI Video API returned HTTP ${response.status}`;
+    throw new Error(message);
+  }
+
+  const data = await response.json();
+  if (!data.id) {
+    throw new Error('OpenAI Video API did not return a valid provider job ID.');
+  }
+
+  return {
+    providerJobId: data.id,
+    status: data.status || 'queued',
+  };
 }
 
 export async function checkOpenAiVideoStatus(
   providerJobId: string,
   userId: string
 ): Promise<{
-  status: 'queued' | 'generating' | 'completed' | 'failed';
+  status: 'queued' | 'processing' | 'completed' | 'failed';
   videoUrl?: string;
   thumbnailUrl?: string;
   errorMessage?: string;
   progress?: number;
 }> {
-  // Check OpenAI official endpoint if configured
-  if (OPENAI_API_KEY && !OPENAI_API_KEY.includes('your-openai-api-key') && providerJobId.startsWith('video_sora_')) {
-    try {
-      const response = await fetch(`https://api.openai.com/v1/videos/${providerJobId}`, {
-        headers: {
-          'Authorization': `Bearer ${OPENAI_API_KEY}`
-        }
-      });
+  if (!OPENAI_API_KEY || OPENAI_API_KEY.includes('your-openai-api-key')) {
+    return {
+      status: 'failed',
+      errorMessage: 'OPENAI_API_KEY environment variable is not configured.',
+    };
+  }
 
-      if (response.ok) {
-        const data: OpenAiVideoJobResponse = await response.json();
+  try {
+    const response = await fetch(`https://api.openai.com/v1/videos/${providerJobId}`, {
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      },
+    });
 
-        if (data.status === 'completed') {
-          const rawVideoUrl = data.video_url || `https://api.openai.com/v1/videos/${providerJobId}/content?variant=video`;
-          const rawThumbUrl = data.thumbnail_url || `https://api.openai.com/v1/videos/${providerJobId}/content?variant=thumbnail`;
-
-          // Download and persist in Supabase Storage
-          const permVideoUrl = await uploadToSupabaseStorage(userId, providerJobId, rawVideoUrl, 'video');
-          const permThumbUrl = await uploadToSupabaseStorage(userId, providerJobId, rawThumbUrl, 'thumbnail');
-
-          return {
-            status: 'completed',
-            videoUrl: permVideoUrl,
-            thumbnailUrl: permThumbUrl,
-            progress: 100
-          };
-        } else if (data.status === 'failed') {
-          return {
-            status: 'failed',
-            errorMessage: data.error || 'Video synthesis failed on OpenAI server',
-            progress: 0
-          };
-        } else {
-          return {
-            status: 'generating',
-            progress: data.progress || 50
-          };
-        }
-      }
-    } catch (err) {
-      console.warn('Error checking OpenAI status:', err);
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      return {
+        status: 'failed',
+        errorMessage: errJson.error?.message || `Failed checking OpenAI status (HTTP ${response.status})`,
+      };
     }
-  }
 
-  // Fallback state calculation
-  const job = mockJobsState.get(providerJobId);
-  if (!job) {
+    const data = await response.json();
+
+    if (data.status === 'completed') {
+      const rawVideoUrl = data.assets?.[0]?.url || data.video_url || data.output_url || `https://api.openai.com/v1/videos/${providerJobId}/content?variant=video`;
+      const rawThumbUrl = data.thumbnail_url || `https://api.openai.com/v1/videos/${providerJobId}/content?variant=thumbnail`;
+
+      // Persist in Supabase Storage if available
+      const permVideoUrl = await uploadToSupabaseStorage(userId, providerJobId, rawVideoUrl, 'video');
+      const permThumbUrl = await uploadToSupabaseStorage(userId, providerJobId, rawThumbUrl, 'thumbnail');
+
+      return {
+        status: 'completed',
+        videoUrl: permVideoUrl || rawVideoUrl,
+        thumbnailUrl: permThumbUrl || rawThumbUrl,
+        progress: 100,
+      };
+    } else if (data.status === 'failed') {
+      return {
+        status: 'failed',
+        errorMessage: data.error?.message || 'Video synthesis failed on OpenAI server',
+        progress: 0,
+      };
+    } else {
+      return {
+        status: 'processing',
+        progress: data.progress || 50,
+      };
+    }
+  } catch (err: any) {
+    console.error('Error checking OpenAI status:', err);
     return {
-      status: 'completed',
-      videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-wild-horse-in-a-field-43285-large.mp4',
-      thumbnailUrl: 'https://images.unsplash.com/photo-1553284965-83fd3e82fa5a?auto=format&fit=crop&q=80&w=800',
-      progress: 100
+      status: 'failed',
+      errorMessage: err.message || 'Error communicating with OpenAI Video API',
     };
   }
+}
 
-  const elapsedSeconds = (Date.now() - job.createdAt) / 1000;
-  if (elapsedSeconds >= 4) {
-    job.status = 'completed';
-    job.progress = 100;
-    mockJobsState.set(providerJobId, job);
-
-    return {
-      status: 'completed',
-      videoUrl: job.videoUrl,
-      thumbnailUrl: job.thumbnailUrl,
-      progress: 100
-    };
-  } else {
-    const calcProgress = Math.min(95, Math.floor(15 + (elapsedSeconds / 4) * 80));
-    job.progress = calcProgress;
-    mockJobsState.set(providerJobId, job);
-
-    return {
-      status: 'generating',
-      progress: calcProgress
-    };
+export async function generateOpenAiImage(
+  prompt: string,
+  options: { model?: string; size?: string; quality?: string } = {}
+): Promise<{ imageUrl: string }> {
+  if (!OPENAI_API_KEY || OPENAI_API_KEY.includes('your-openai-api-key')) {
+    throw new Error('OPENAI_API_KEY environment variable is required for image generation');
   }
+
+  const response = await fetch('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: options.model || 'dall-e-3',
+      prompt,
+      n: 1,
+      size: options.size || '1024x1024',
+      quality: options.quality || 'standard',
+      response_format: 'url',
+    }),
+  });
+
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData.error?.message || `OpenAI Image Generation failed with status ${response.status}`);
+  }
+
+  const data = await response.json();
+  const imageUrl = data.data?.[0]?.url;
+  if (!imageUrl) {
+    throw new Error('No image URL returned from OpenAI');
+  }
+
+  return { imageUrl };
 }

@@ -6,17 +6,29 @@ import { HomeDashboard } from './components/HomeDashboard';
 import { ProjectWorkspace } from './components/ProjectWorkspace';
 import { VideoModal } from './components/VideoModal';
 import { TopUpModal } from './components/TopUpModal';
+import { SettingsModal } from './components/SettingsModal';
+import { initAuthHandoff, fetchUserCredits, fetchVideoHistory, fetchAuthMe, clearAuthToken, UserProfileData } from './lib/api';
 
 export default function App() {
-  // Theme state
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  // Theme state initialized with localStorage support
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('theme');
+    return saved ? saved === 'dark' : true;
+  });
 
-  // Apply dark mode class to root element
+  // User profile state
+  const [userProfile, setUserProfile] = useState<UserProfileData | null>(null);
+
+  // Apply dark mode class to html and body elements
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
+      document.body.classList.add('dark');
+      localStorage.setItem('theme', 'dark');
     } else {
       document.documentElement.classList.remove('dark');
+      document.body.classList.remove('dark');
+      localStorage.setItem('theme', 'light');
     }
   }, [isDarkMode]);
 
@@ -26,24 +38,105 @@ export default function App() {
 
   // App data state
   const [projects, setProjects] = useState<Project[]>(INITIAL_PROJECTS);
-  const [credits, setCredits] = useState<number>(4850);
+  const [credits, setCredits] = useState<number>(0);
 
-  // Sync credits & plan on boot from API
+  const handleSignOut = () => {
+    clearAuthToken();
+    setUserProfile(null);
+    setCredits(0);
+    window.location.href = 'https://trelvixai.com';
+  };
+
+  const handleReturnToMainApp = () => {
+    window.location.href = 'https://trelvixai.com';
+  };
+
+  const handleOpenSupport = () => {
+    window.location.href = 'https://trelvixai.com/support';
+  };
+
+  const loadUserData = async () => {
+    // 1. Check & extract cross-domain auth token if navigating from main app
+    initAuthHandoff();
+
+    // 2. Fetch authenticated user profile & live wallet credits
+    const authMe = await fetchAuthMe();
+    if (authMe && authMe.user) {
+      setUserProfile(authMe.user);
+      if (authMe.wallet && authMe.wallet.balance !== undefined) {
+        setCredits(authMe.wallet.balance);
+      }
+    } else {
+      setUserProfile(null);
+      const wallet = await fetchUserCredits();
+      if (wallet && wallet.balance !== undefined) {
+        setCredits(wallet.balance);
+      } else {
+        setCredits(0);
+      }
+    }
+
+    // 3. Fetch persistent video generation history from database
+    const historyItems = await fetchVideoHistory();
+    if (historyItems && historyItems.length > 0) {
+      const dbVideos: VideoGeneration[] = historyItems.map((item: any) => ({
+        id: item.id || item.providerJobId,
+        prompt: item.prompt || '',
+        quality: item.quality || 'Creative Quality',
+        aspectRatio: item.aspectRatio || '16:9',
+        duration: item.duration || '6s',
+        batchCount: 'x1',
+        createdAt: item.createdAt ? new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recently',
+        videoUrl: item.videoUrl,
+        posterUrl: item.posterUrl,
+        creditCost: 10,
+        status: item.status || 'completed'
+      }));
+
+      // Hydrate persistent library into project workspace state
+      const historyProject: Project = {
+        id: 'proj-persistent-library',
+        title: 'Persistent Generated Library',
+        createdAt: 'Synced from Database',
+        updatedAt: 'Just now',
+        thumbnailUrl: dbVideos[0]?.posterUrl || 'https://images.unsplash.com/photo-1614728263952-84ea256f9679?auto=format&fit=crop&q=80&w=600',
+        videos: dbVideos
+      };
+
+      setProjects((prev) => {
+        const filtered = prev.filter((p) => p.id !== 'proj-persistent-library');
+        return [historyProject, ...filtered];
+      });
+    } else {
+      setProjects((prev) => prev.filter((p) => p.id !== 'proj-persistent-library'));
+    }
+  };
+
+  // Sync Video Studio auth handoff, credits, & persistent video generations on boot & account changes
   useEffect(() => {
-    fetch('/api/video-studio/billing/plan')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.plan?.remainingCredits !== undefined) {
-          setCredits(data.plan.remainingCredits);
-        }
-      })
-      .catch(() => {});
+    loadUserData();
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'trelvix_auth_token') {
+        // Token changed or cleared -> Reset user state and reload
+        setCredits(0);
+        setProjects(INITIAL_PROJECTS);
+        loadUserData();
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
   }, []);
 
-  // Modals state
+  // Modals & Settings state
   const [selectedVideo, setSelectedVideo] = useState<VideoGeneration | null>(null);
-  const [isTopUpOpen, setIsTopUpOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'general' | 'credits' | 'history' | 'payment'>('credits');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   // Handle creating a brand new project (Image 2 empty canvas)
   const handleNewProject = () => {
@@ -99,14 +192,34 @@ export default function App() {
       <Navbar
         currentView={currentView}
         activeProjectTitle={activeProject?.title}
-        onBackToHome={() => setCurrentView('home')}
+        allProjects={projects}
+        onSelectProject={(proj) => {
+          handleOpenProject(proj);
+          setIsMobileSidebarOpen(false);
+        }}
+        onBackToHome={() => {
+          setCurrentView('home');
+          setIsMobileSidebarOpen(false);
+        }}
         onNewProject={handleNewProject}
         credits={credits}
-        onOpenTopUp={() => setIsTopUpOpen(true)}
+        onOpenTopUp={() => {
+          setSettingsTab('credits');
+          setIsSettingsOpen(true);
+        }}
+        onOpenSettings={() => {
+          setSettingsTab('credits');
+          setIsSettingsOpen(true);
+        }}
         isDarkMode={isDarkMode}
         onToggleTheme={() => setIsDarkMode(!isDarkMode)}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        onToggleSidebar={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
+        userProfile={userProfile}
+        onSignOut={handleSignOut}
+        onReturnToMainApp={handleReturnToMainApp}
+        onOpenSupport={handleOpenSupport}
       />
 
       {/* Main View Router */}
@@ -121,10 +234,25 @@ export default function App() {
       ) : activeProject ? (
         <ProjectWorkspace
           project={activeProject}
+          allProjects={projects}
+          onOpenProject={(p) => {
+            handleOpenProject(p);
+            setIsMobileSidebarOpen(false);
+          }}
           onUpdateProject={handleUpdateProject}
           onSelectVideo={setSelectedVideo}
           credits={credits}
           setCredits={setCredits}
+          isMobileSidebarOpen={isMobileSidebarOpen}
+          onCloseMobileSidebar={() => setIsMobileSidebarOpen(false)}
+          userProfile={userProfile}
+          onOpenSettings={() => {
+            setSettingsTab('credits');
+            setIsSettingsOpen(true);
+          }}
+          onReturnToMainApp={handleReturnToMainApp}
+          onOpenSupport={handleOpenSupport}
+          onSignOut={handleSignOut}
         />
       ) : null}
 
@@ -134,11 +262,15 @@ export default function App() {
         onClose={() => setSelectedVideo(null)}
       />
 
-      {/* Top Up Credits Modal */}
-      <TopUpModal
-        isOpen={isTopUpOpen}
-        onClose={() => setIsTopUpOpen(false)}
-        onAddCredits={handleAddCredits}
+      {/* Video Studio Settings & Billing Modal */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        currentCredits={credits}
+        onCreditsUpdated={setCredits}
+        defaultTab={settingsTab}
+        isDarkMode={isDarkMode}
+        onToggleTheme={() => setIsDarkMode(!isDarkMode)}
       />
 
     </div>
