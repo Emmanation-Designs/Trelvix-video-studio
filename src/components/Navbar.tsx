@@ -63,7 +63,7 @@ export const UserAvatar: React.FC<{ userProfile?: UserProfileData | null; classN
       const namePart = userProfile.email.split('@')[0];
       return namePart.slice(0, 2).toUpperCase();
     }
-    return 'SU';
+    return userProfile ? 'U' : '?';
   }, [userProfile]);
 
   if (userProfile?.avatarUrl && !imgError) {
@@ -212,10 +212,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <UserAvatar userProfile={userProfile} className="w-10 h-10" />
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-bold text-zinc-900 dark:text-zinc-100 truncate">
-                          {userProfile?.fullName || 'Studio User'}
+                          {userProfile?.fullName?.trim() || (userProfile?.email ? userProfile.email.split('@')[0] : (userProfile ? 'Account' : 'Sign in'))}
                         </div>
                         <div className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
-                          {userProfile?.email || 'studio.user@trelvixai.com'}
+                          {userProfile?.email || (userProfile ? '' : 'No active session')}
                         </div>
                       </div>
                     </div>
@@ -489,10 +489,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                           <UserAvatar userProfile={userProfile} className="w-10 h-10" />
                           <div className="min-w-0 flex-1">
                             <div className="text-sm font-bold text-zinc-900 dark:text-zinc-100 truncate">
-                              {userProfile?.fullName || 'Studio User'}
+                              {userProfile?.fullName?.trim() || (userProfile?.email ? userProfile.email.split('@')[0] : (userProfile ? 'Account' : 'Sign in'))}
                             </div>
                             <div className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
-                              {userProfile?.email || 'studio.user@trelvixai.com'}
+                              {userProfile?.email || (userProfile ? '' : 'No active session')}
                             </div>
                           </div>
                         </div>

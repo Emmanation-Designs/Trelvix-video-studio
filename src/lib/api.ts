@@ -23,9 +23,16 @@ export function initAuthHandoff(): string | null {
     if (token) {
       localStorage.setItem(AUTH_TOKEN_KEY, token);
 
-      // Clean access_token out of URL to prevent exposure in location bar/browser history
+      // Clean access_token out of search params and hash to prevent exposure in location bar/browser history
       url.searchParams.delete('access_token');
-      const cleanUrl = url.pathname + (url.searchParams.toString() ? '?' + url.searchParams.toString() : '') + url.hash;
+      let cleanHash = url.hash;
+      if (cleanHash && cleanHash.includes('access_token')) {
+        const hashParams = new URLSearchParams(cleanHash.replace(/^#/, ''));
+        hashParams.delete('access_token');
+        cleanHash = hashParams.toString() ? '#' + hashParams.toString() : '';
+      }
+
+      const cleanUrl = url.pathname + (url.searchParams.toString() ? '?' + url.searchParams.toString() : '') + cleanHash;
       window.history.replaceState(null, '', cleanUrl);
 
       return token;
@@ -60,6 +67,43 @@ export function setAuthToken(token: string): void {
 export function clearAuthToken(): void {
   if (typeof window === 'undefined') return;
   localStorage.removeItem(AUTH_TOKEN_KEY);
+}
+
+/**
+ * Safely parses response as JSON, protecting against HTML 404/500 error pages
+ * and eliminating SyntaxError: Unexpected token 'T'
+ */
+export async function safeParseJsonResponse<T = any>(
+  response: Response
+): Promise<{ ok: boolean; status: number; data: T | null; error?: string }> {
+  const contentType = response.headers.get('content-type') || '';
+  const text = await response.text();
+
+  if (!contentType.includes('application/json')) {
+    return {
+      ok: false,
+      status: response.status,
+      data: null,
+      error: `Server returned non-JSON response (HTTP ${response.status})`,
+    };
+  }
+
+  try {
+    const json = JSON.parse(text);
+    return {
+      ok: response.ok,
+      status: response.status,
+      data: json,
+      error: !response.ok ? json.error || `HTTP ${response.status}` : undefined,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      status: response.status,
+      data: null,
+      error: `Failed to parse JSON response (HTTP ${response.status}): ${err.message}`,
+    };
+  }
 }
 
 /**
@@ -101,9 +145,9 @@ export interface UserProfileData {
 export async function fetchAuthMe(): Promise<{ user: UserProfileData; wallet: { balance: number; lifetimeCreditsPurchased: number; lifetimeCreditsUsed: number } } | null> {
   try {
     const res = await authFetch('/api/video-studio/auth/me');
-    const data = await res.json();
-    if (data.success && data.user) {
-      return { user: data.user, wallet: data.wallet };
+    const parsed = await safeParseJsonResponse(res);
+    if (parsed.ok && parsed.data && parsed.data.success && parsed.data.user) {
+      return { user: parsed.data.user, wallet: parsed.data.wallet };
     }
   } catch (e) {
     console.error('Failed checking auth session:', e);
@@ -117,9 +161,9 @@ export async function fetchAuthMe(): Promise<{ user: UserProfileData; wallet: { 
 export async function fetchUserCredits(): Promise<{ balance: number; lifetimeCreditsPurchased: number; lifetimeCreditsUsed: number } | null> {
   try {
     const res = await authFetch('/api/video-studio/credits');
-    const data = await res.json();
-    if (data.success && data.wallet) {
-      return data.wallet;
+    const parsed = await safeParseJsonResponse(res);
+    if (parsed.ok && parsed.data && parsed.data.success && parsed.data.wallet) {
+      return parsed.data.wallet;
     }
   } catch (e) {
     console.error('Failed fetching user credits:', e);
@@ -133,9 +177,9 @@ export async function fetchUserCredits(): Promise<{ balance: number; lifetimeCre
 export async function fetchVideoHistory(): Promise<any[]> {
   try {
     const res = await authFetch('/api/tools/video-studio/history');
-    const data = await res.json();
-    if (data.success && Array.isArray(data.history)) {
-      return data.history;
+    const parsed = await safeParseJsonResponse(res);
+    if (parsed.ok && parsed.data && parsed.data.success && Array.isArray(parsed.data.history)) {
+      return parsed.data.history;
     }
   } catch (e) {
     console.error('Failed fetching video generation history:', e);

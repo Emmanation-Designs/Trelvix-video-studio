@@ -879,6 +879,14 @@ async function startServer() {
   app.delete('/api/video-studio/generations/:id', handleDeleteRequest);
   app.delete('/api/tools/video-studio/:providerJobId', handleDeleteRequest);
 
+  // Catch-all 404 handler for API routes to guarantee JSON response and prevent HTML SPA fallback
+  app.use('/api/*', (req: Request, res: Response) => {
+    res.status(404).json({
+      success: false,
+      error: `API endpoint not found: ${req.method} ${req.originalUrl}`,
+    });
+  });
+
   // Vite Middleware Setup
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

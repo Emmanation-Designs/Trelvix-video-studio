@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { authFetch, fetchUserCredits, UserProfileData } from '../lib/api';
+import { authFetch, fetchUserCredits, safeParseJsonResponse, UserProfileData } from '../lib/api';
 import { UserAvatar } from './Navbar';
 import { 
   LayoutGrid, 
@@ -234,10 +234,11 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         })
       });
 
-      const data = await response.json();
+      const parsedGen = await safeParseJsonResponse(response);
+      const data = parsedGen.data || {};
 
-      if (!response.ok || !data.success) {
-        alert(data.error || 'Video generation request failed.');
+      if (!parsedGen.ok || !data.success) {
+        alert(parsedGen.error || data.error || 'Video generation request failed.');
         setIsGenerating(false);
         if (data.remainingCredits !== undefined) {
           setCredits(data.remainingCredits);
@@ -265,7 +266,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
           try {
             const statusRes = await authFetch(`/api/video-studio/generations/${job.providerJobId || job.id}/status`);
-            const statusData = await statusRes.json();
+            const statusParsed = await safeParseJsonResponse(statusRes);
+            const statusData = statusParsed.data || {};
 
             if (statusData.status === 'completed' || statusData.video?.status === 'completed') {
               isDone = true;
@@ -332,8 +334,9 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: characterInput })
       });
-      const data = await res.json();
-      if (data.success && data.imageUrl) {
+      const parsedChar = await safeParseJsonResponse(res);
+      const data = parsedChar.data || {};
+      if (parsedChar.ok && data.success && data.imageUrl) {
         const newChar: CharacterItem = {
           id: `char-${Date.now()}`,
           number: characters.length + 1,
@@ -345,7 +348,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         setCharacters([newChar, ...characters]);
         setCharacterInput('');
       } else {
-        alert(data.error || 'Character image generation failed');
+        alert(parsedChar.error || data.error || 'Character image generation failed');
       }
     } catch (err: any) {
       alert(`Image generation failed: ${err.message || 'Error'}`);
@@ -390,8 +393,9 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: sceneInput })
       });
-      const data = await res.json();
-      if (data.success && data.imageUrl) {
+      const parsedScene = await safeParseJsonResponse(res);
+      const data = parsedScene.data || {};
+      if (parsedScene.ok && data.success && data.imageUrl) {
         const newScene: SceneItem = {
           id: `scene-${Date.now()}`,
           number: scenes.length + 1,
@@ -403,7 +407,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         setScenes([newScene, ...scenes]);
         setSceneInput('');
       } else {
-        alert(data.error || 'Scene image generation failed');
+        alert(parsedScene.error || data.error || 'Scene image generation failed');
       }
     } catch (err: any) {
       alert(`Image generation failed: ${err.message || 'Error'}`);
