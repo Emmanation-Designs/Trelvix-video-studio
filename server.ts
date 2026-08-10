@@ -42,9 +42,8 @@ export interface VideoGenerationRecord {
 
 const memoryGenerationsDB = new Map<string, VideoGenerationRecord>();
 
-async function startServer() {
+export async function createExpressApp() {
   const app = express();
-  const PORT = 3000;
 
   app.use(express.json());
 
@@ -902,9 +901,18 @@ async function startServer() {
     });
   }
 
+  return app;
+}
+
+async function startServer() {
+  const app = await createExpressApp();
+  const PORT = 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Video Studio Server listening on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
+  startServer();
+}
+
