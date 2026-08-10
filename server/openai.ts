@@ -149,7 +149,7 @@ export async function generateOpenAiImage(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: options.model || 'dall-e-3',
+      model: options.model || 'gpt-image-2',
       prompt,
       n: 1,
       size: options.size || '1024x1024',

@@ -723,7 +723,7 @@ async function startServer() {
   const handleImageGenerationRequest = async (req: Request, res: Response) => {
     try {
       await verifyUserToken(req);
-      const { prompt, model = 'dall-e-3', size = '1024x1024', quality = 'standard' } = req.body;
+      const { prompt, model = 'gpt-image-2', size = '1024x1024', quality = 'standard' } = req.body;
 
       if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
         res.status(400).json({ success: false, error: 'Prompt string is required for image generation' });
