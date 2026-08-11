@@ -2,13 +2,14 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID || '';
-const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET || '';
-const PAYPAL_ENVIRONMENT = (process.env.PAYPAL_ENVIRONMENT || 'live').toLowerCase();
+function getPayPalConfig() {
+  const clientId = process.env.PAYPAL_CLIENT_ID || '';
+  const clientSecret = process.env.PAYPAL_CLIENT_SECRET || '';
+  const env = (process.env.PAYPAL_ENVIRONMENT || 'live').toLowerCase();
+  const apiBase = env === 'sandbox' ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
 
-const PAYPAL_API_BASE = PAYPAL_ENVIRONMENT === 'sandbox'
-  ? 'https://api-m.sandbox.paypal.com'
-  : 'https://api-m.paypal.com';
+  return { clientId, clientSecret, env, apiBase };
+}
 
 interface PayPalAccessTokenResponse {
   access_token: string;
@@ -22,18 +23,20 @@ let cachedAccessToken: { token: string; expiresAt: number } | null = null;
  * Obtain OAuth 2.0 access token from PayPal REST API
  */
 export async function getPayPalAccessToken(): Promise<string> {
+  const { clientId, clientSecret, apiBase } = getPayPalConfig();
+
   if (cachedAccessToken && Date.now() < cachedAccessToken.expiresAt - 60000) {
     return cachedAccessToken.token;
   }
 
-  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
+  if (!clientId || !clientSecret) {
     console.warn('PayPal credentials missing. Operating in fallback/development mode.');
     return 'mock_paypal_token';
   }
 
-  const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
+  const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
-  const response = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+  const response = await fetch(`${apiBase}/v1/oauth2/token`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -68,8 +71,9 @@ export async function createPayPalOrder(params: {
   currency?: string;
 }) {
   const { packageId, packageName, credits, amountUsd, currency = 'USD' } = params;
+  const { clientId, clientSecret, apiBase } = getPayPalConfig();
 
-  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
+  if (!clientId || !clientSecret) {
     // Development fallback mock order ID
     const mockOrderId = `MOCK-ORDER-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
     return {
@@ -122,7 +126,7 @@ export async function createPayPalOrder(params: {
     },
   };
 
-  const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
+  const response = await fetch(`${apiBase}/v2/checkout/orders`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -153,7 +157,9 @@ export async function createPayPalOrder(params: {
  * Capture a PayPal Order server-side
  */
 export async function capturePayPalOrder(orderId: string) {
-  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET || orderId.startsWith('MOCK-ORDER-')) {
+  const { clientId, clientSecret, apiBase } = getPayPalConfig();
+
+  if (!clientId || !clientSecret || orderId.startsWith('MOCK-ORDER-')) {
     // Development fallback capture response
     return {
       id: orderId,
@@ -168,7 +174,7 @@ export async function capturePayPalOrder(orderId: string) {
 
   const accessToken = await getPayPalAccessToken();
 
-  const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
+  const response = await fetch(`${apiBase}/v2/checkout/orders/${orderId}/capture`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -204,8 +210,9 @@ export async function capturePayPalOrder(orderId: string) {
  */
 export async function verifyPayPalWebhookSignature(headers: Record<string, string>, body: any) {
   const webhookId = process.env.PAYPAL_WEBHOOK_ID || '';
+  const { clientId, clientSecret, apiBase } = getPayPalConfig();
 
-  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET || !webhookId) {
+  if (!clientId || !clientSecret || !webhookId) {
     // If webhook ID is not configured, fallback to basic event type inspection
     return true;
   }
@@ -216,7 +223,7 @@ export async function verifyPayPalWebhookSignature(headers: Record<string, strin
     const verificationPayload = {
       auth_algo: headers['paypal-auth-algo'],
       cert_url: headers['paypal-cert-url'],
-      client_id: PAYPAL_CLIENT_ID,
+      client_id: clientId,
       transmission_id: headers['paypal-transmission-id'],
       transmission_sig: headers['paypal-transmission-sig'],
       transmission_time: headers['paypal-transmission-time'],
@@ -224,7 +231,7 @@ export async function verifyPayPalWebhookSignature(headers: Record<string, strin
       webhook_event: body,
     };
 
-    const response = await fetch(`${PAYPAL_API_BASE}/v1/notifications/verify-webhook-signature`, {
+    const response = await fetch(`${apiBase}/v1/notifications/verify-webhook-signature`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

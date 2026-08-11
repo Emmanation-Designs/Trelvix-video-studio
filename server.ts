@@ -42,6 +42,22 @@ export interface VideoGenerationRecord {
 
 const memoryGenerationsDB = new Map<string, VideoGenerationRecord>();
 
+function handleAuthOrServerError(res: Response, err: any, default500Message: string) {
+  const message = err?.message || default500Message;
+  const isAuth =
+    message === 'Invalid or expired authentication token' ||
+    message === 'Database/Auth service not configured' ||
+    message.toLowerCase().includes('unauthorized') ||
+    message.toLowerCase().includes('jwt') ||
+    message.toLowerCase().includes('bearer token');
+
+  if (isAuth) {
+    res.status(401).json({ success: false, error: `Unauthorized: ${message}` });
+    return;
+  }
+  res.status(500).json({ success: false, error: message });
+}
+
 export async function createExpressApp() {
   const app = express();
 
@@ -54,6 +70,7 @@ export async function createExpressApp() {
       service: 'Trelvix AI Video Studio Backend',
       paypalConfigured: Boolean(process.env.PAYPAL_CLIENT_ID),
       openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
+      supabaseConfigured: Boolean(process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)),
       timestamp: new Date().toISOString(),
     });
   });
@@ -82,11 +99,8 @@ export async function createExpressApp() {
         },
       });
     } catch (err: any) {
-      if (err.message === 'Invalid or expired authentication token') {
-        res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired authentication token' });
-        return;
-      }
-      res.status(500).json({ success: false, error: err.message || 'Auth check failed' });
+      console.error('[auth/me] Exception:', err);
+      handleAuthOrServerError(res, err, 'Auth check failed');
     }
   });
 
@@ -104,12 +118,8 @@ export async function createExpressApp() {
         },
       });
     } catch (err: any) {
-      console.error('Error fetching credit wallet:', err);
-      if (err.message === 'Invalid or expired authentication token') {
-        res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired authentication token' });
-        return;
-      }
-      res.status(500).json({ success: false, error: err.message || 'Failed fetching credit balance' });
+      console.error('[credits] Exception:', err);
+      handleAuthOrServerError(res, err, 'Failed fetching credit balance');
     }
   });
 
@@ -155,12 +165,8 @@ export async function createExpressApp() {
         })),
       });
     } catch (err: any) {
-      console.error('Error fetching transaction history:', err);
-      if (err.message === 'Invalid or expired authentication token') {
-        res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired authentication token' });
-        return;
-      }
-      res.status(500).json({ success: false, error: 'Failed fetching transaction history' });
+      console.error('[payments/history] Exception:', err);
+      handleAuthOrServerError(res, err, 'Failed fetching transaction history');
     }
   });
 
@@ -509,12 +515,8 @@ export async function createExpressApp() {
         })),
       });
     } catch (err: any) {
-      console.error('Error in video generation request:', err);
-      if (err.message === 'Invalid or expired authentication token') {
-        res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired authentication token' });
-        return;
-      }
-      res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+      console.error('[generations] Exception:', err);
+      handleAuthOrServerError(res, err, 'Internal server error');
     }
   };
 
@@ -658,12 +660,8 @@ export async function createExpressApp() {
         },
       });
     } catch (err: any) {
-      console.error('Error in video status check endpoint:', err);
-      if (err.message === 'Invalid or expired authentication token') {
-        res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired authentication token' });
-        return;
-      }
-      res.status(500).json({ success: false, error: err.message || 'Failed checking status' });
+      console.error('[status] Exception:', err);
+      handleAuthOrServerError(res, err, 'Failed checking status');
     }
   };
 
@@ -704,11 +702,8 @@ export async function createExpressApp() {
 
       res.redirect(record.video_url);
     } catch (err: any) {
-      if (err.message === 'Invalid or expired authentication token') {
-        res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired authentication token' });
-        return;
-      }
-      res.status(500).json({ success: false, error: 'Failed accessing video asset' });
+      console.error('[serving] Exception:', err);
+      handleAuthOrServerError(res, err, 'Failed accessing video asset');
     }
   };
 
@@ -736,12 +731,8 @@ export async function createExpressApp() {
         imageUrl: result.imageUrl,
       });
     } catch (err: any) {
-      console.error('Error generating image:', err);
-      if (err.message === 'Invalid or expired authentication token') {
-        res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired authentication token' });
-        return;
-      }
-      res.status(500).json({ success: false, error: err.message || 'Image generation failed' });
+      console.error('[image/generation] Exception:', err);
+      handleAuthOrServerError(res, err, 'Image generation failed');
     }
   };
 
@@ -772,29 +763,33 @@ export async function createExpressApp() {
 
       const updatedRecords = await Promise.all(
         records.map(async (rec) => {
-          if (rec.status === 'processing' || rec.status === 'queued') {
-            const statusCheck = await checkOpenAiVideoStatus(rec.provider_job_id, user.id);
-            if (statusCheck.status === 'completed' && statusCheck.videoUrl) {
-              rec.status = 'completed';
-              rec.video_url = statusCheck.videoUrl;
-              if (client) {
-                await client.from('video_generations').update({ status: 'completed', video_url: statusCheck.videoUrl }).eq('id', rec.id);
-              }
-            } else if (statusCheck.status === 'failed') {
-              rec.status = 'failed';
-              rec.error_message = statusCheck.errorMessage;
-              const costToRefund = await getGenerationCreditCost(rec.quality, `${rec.duration}s`, 1);
-              await refundGenerationCreditsOnce({
-                userId: user.id,
-                providerJobId: rec.provider_job_id,
-                creditsToRefund: costToRefund,
-                reason: `Asynchronous generation failed: ${statusCheck.errorMessage || 'Unknown AI error'}`,
-              });
-              rec.refunded = true;
-              if (client) {
-                await client.from('video_generations').update({ status: 'failed', refunded: true, error_message: statusCheck.errorMessage }).eq('id', rec.id);
+          try {
+            if (rec.status === 'processing' || rec.status === 'queued') {
+              const statusCheck = await checkOpenAiVideoStatus(rec.provider_job_id, user.id);
+              if (statusCheck.status === 'completed' && statusCheck.videoUrl) {
+                rec.status = 'completed';
+                rec.video_url = statusCheck.videoUrl;
+                if (client) {
+                  await client.from('video_generations').update({ status: 'completed', video_url: statusCheck.videoUrl }).eq('id', rec.id);
+                }
+              } else if (statusCheck.status === 'failed') {
+                rec.status = 'failed';
+                rec.error_message = statusCheck.errorMessage;
+                const costToRefund = await getGenerationCreditCost(rec.quality, `${rec.duration}s`, 1);
+                await refundGenerationCreditsOnce({
+                  userId: user.id,
+                  providerJobId: rec.provider_job_id,
+                  creditsToRefund: costToRefund,
+                  reason: `Asynchronous generation failed: ${statusCheck.errorMessage || 'Unknown AI error'}`,
+                });
+                rec.refunded = true;
+                if (client) {
+                  await client.from('video_generations').update({ status: 'failed', refunded: true, error_message: statusCheck.errorMessage }).eq('id', rec.id);
+                }
               }
             }
+          } catch (itemErr) {
+            console.warn(`[handleHistoryRequest] Warning checking status for generation ${rec.id}:`, itemErr);
           }
           return rec;
         })
@@ -816,12 +811,8 @@ export async function createExpressApp() {
         })),
       });
     } catch (err: any) {
-      console.error('Error fetching history:', err);
-      if (err.message === 'Invalid or expired authentication token') {
-        res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired authentication token' });
-        return;
-      }
-      res.status(500).json({ success: false, error: err.message || 'Failed fetching video history' });
+      console.error('[history] Exception:', err);
+      handleAuthOrServerError(res, err, 'Failed fetching video history');
     }
   };
 
@@ -867,11 +858,8 @@ export async function createExpressApp() {
 
       res.json({ success: true, message: 'Video generation record deleted successfully.' });
     } catch (err: any) {
-      if (err.message === 'Invalid or expired authentication token') {
-        res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired authentication token' });
-        return;
-      }
-      res.status(500).json({ success: false, error: err.message || 'Failed deleting video' });
+      console.error('[delete] Exception:', err);
+      handleAuthOrServerError(res, err, 'Failed deleting video generation');
     }
   };
 

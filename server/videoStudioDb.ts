@@ -159,7 +159,7 @@ export async function getUserWallet(userId: string): Promise<VideoCreditWallet> 
         .from('video_credit_wallets')
         .select('*')
         .eq('user_id', userId)
-        .single();
+        .maybeSingle();
 
       if (!error && data) {
         return {
@@ -172,7 +172,7 @@ export async function getUserWallet(userId: string): Promise<VideoCreditWallet> 
         };
       }
 
-      // Initialize default wallet with 0 credits
+      // Initialize default wallet with 0 credits if no row exists
       const defaultWallet: VideoCreditWallet = {
         user_id: userId,
         balance: 0,
@@ -182,7 +182,10 @@ export async function getUserWallet(userId: string): Promise<VideoCreditWallet> 
         updated_at: new Date().toISOString(),
       };
 
-      await client.from('video_credit_wallets').insert(defaultWallet);
+      const { error: insertErr } = await client.from('video_credit_wallets').insert(defaultWallet);
+      if (insertErr) {
+        console.warn('Note: Default wallet creation in Supabase returned:', insertErr.message);
+      }
       return defaultWallet;
     } catch (err) {
       console.warn('Error fetching Supabase wallet, falling back to memory:', err);

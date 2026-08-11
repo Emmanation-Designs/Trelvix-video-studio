@@ -1,6 +1,8 @@
 import { uploadToSupabaseStorage } from './storage';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+function getOpenAiApiKey(): string {
+  return process.env.OPENAI_API_KEY || '';
+}
 
 interface OpenAiVideoRequestOptions {
   prompt: string;
@@ -16,7 +18,8 @@ interface OpenAiVideoRequestOptions {
 export async function requestOpenAiVideoGeneration(
   options: OpenAiVideoRequestOptions
 ): Promise<{ providerJobId: string; status: string }> {
-  if (!OPENAI_API_KEY || OPENAI_API_KEY.includes('your-openai-api-key')) {
+  const apiKey = getOpenAiApiKey();
+  if (!apiKey || apiKey.includes('your-openai-api-key')) {
     throw new Error('OPENAI_API_KEY environment variable is required for real video generation.');
   }
 
@@ -42,7 +45,7 @@ export async function requestOpenAiVideoGeneration(
   const response = await fetch('https://api.openai.com/v1/videos', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
@@ -75,7 +78,8 @@ export async function checkOpenAiVideoStatus(
   errorMessage?: string;
   progress?: number;
 }> {
-  if (!OPENAI_API_KEY || OPENAI_API_KEY.includes('your-openai-api-key')) {
+  const apiKey = getOpenAiApiKey();
+  if (!apiKey || apiKey.includes('your-openai-api-key')) {
     return {
       status: 'failed',
       errorMessage: 'OPENAI_API_KEY environment variable is not configured.',
@@ -85,7 +89,7 @@ export async function checkOpenAiVideoStatus(
   try {
     const response = await fetch(`https://api.openai.com/v1/videos/${providerJobId}`, {
       headers: {
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
       },
     });
 
@@ -138,14 +142,15 @@ export async function generateOpenAiImage(
   prompt: string,
   options: { model?: string; size?: string; quality?: string } = {}
 ): Promise<{ imageUrl: string }> {
-  if (!OPENAI_API_KEY || OPENAI_API_KEY.includes('your-openai-api-key')) {
+  const apiKey = getOpenAiApiKey();
+  if (!apiKey || apiKey.includes('your-openai-api-key')) {
     throw new Error('OPENAI_API_KEY environment variable is required for image generation');
   }
 
   const response = await fetch('https://api.openai.com/v1/images/generations', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
