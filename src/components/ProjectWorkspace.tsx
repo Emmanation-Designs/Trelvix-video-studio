@@ -686,11 +686,13 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
               <UserAvatar userProfile={userProfile} className="w-8 h-8" />
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
-                  {userProfile?.fullName || 'Studio User'}
+                  {userProfile?.fullName || userProfile?.email || 'Trelvix User'}
                 </div>
-                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">
-                  {userProfile?.email || 'studio.user@trelvixai.com'}
-                </div>
+                {userProfile?.email && (
+                  <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">
+                    {userProfile.email}
+                  </div>
+                )}
               </div>
               <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform ${showMobileAccountMenu ? 'rotate-180' : ''}`} />
             </button>

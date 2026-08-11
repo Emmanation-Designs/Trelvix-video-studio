@@ -76,7 +76,7 @@ export async function verifyUserToken(authHeaderOrReq?: string | Request): Promi
     return { 
       id: user.id, 
       email: user.email || '',
-      fullName: fullName || 'Studio User',
+      fullName: fullName || (user.email ? user.email.split('@')[0] : ''),
       avatarUrl
     };
   } catch (err: any) {
