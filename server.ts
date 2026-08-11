@@ -3,8 +3,8 @@ import path from 'path';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
-import { getSupabaseAdmin, verifyUserToken } from './server/db';
-import { requestOpenAiVideoGeneration, checkOpenAiVideoStatus, generateOpenAiImage } from './server/openai';
+import { getSupabaseAdmin, verifyUserToken } from './server/db.js';
+import { requestOpenAiVideoGeneration, checkOpenAiVideoStatus, generateOpenAiImage } from './server/openai.js';
 import {
   getUserWallet,
   getCreditPackages,
@@ -16,12 +16,12 @@ import {
   recordPendingPayPalOrder,
   processVerifiedPayPalPayment,
   getUserTransactionHistory,
-} from './server/videoStudioDb';
+} from './server/videoStudioDb.js';
 import {
   createPayPalOrder,
   capturePayPalOrder,
   verifyPayPalWebhookSignature,
-} from './server/paypal';
+} from './server/paypal.js';
 
 dotenv.config();
 
