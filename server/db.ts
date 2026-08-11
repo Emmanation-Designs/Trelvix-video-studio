@@ -62,8 +62,33 @@ export async function verifyUserToken(authHeaderOrReq?: string | Request): Promi
     }
 
     const user = data.user;
+
+    // Fetch Trelvix AI profile from public.profiles table
+    let trelvixAvatarUrl: string | undefined = undefined;
+    let trelvixFullName: string | undefined = undefined;
+
+    try {
+      const { data: profileData, error: profileErr } = await client
+        .from('profiles')
+        .select('avatar_url, full_name, name')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (!profileErr && profileData) {
+        if (profileData.avatar_url && typeof profileData.avatar_url === 'string' && profileData.avatar_url.trim().length > 0) {
+          trelvixAvatarUrl = profileData.avatar_url.trim();
+        }
+        const pName = profileData.full_name || profileData.name;
+        if (pName && typeof pName === 'string' && pName.trim().length > 0) {
+          trelvixFullName = pName.trim();
+        }
+      }
+    } catch (pErr) {
+      console.warn('[verifyUserToken] Error querying public.profiles table:', pErr);
+    }
+
     const meta = user.user_metadata || {};
-    let fullName = meta.full_name || meta.name || meta.display_name;
+    let fullName = trelvixFullName || meta.full_name || meta.name || meta.display_name;
     if (!fullName && user.email) {
       const namePart = user.email.split('@')[0].replace(/[._-]/g, ' ');
       fullName = namePart
@@ -71,7 +96,9 @@ export async function verifyUserToken(authHeaderOrReq?: string | Request): Promi
         .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
         .join(' ');
     }
-    const avatarUrl = meta.avatar_url || meta.picture || undefined;
+
+    // Use strictly the Trelvix AI profile avatar URL (do NOT fall back to Google OAuth avatar_url or picture)
+    const avatarUrl = trelvixAvatarUrl;
 
     return { 
       id: user.id, 
