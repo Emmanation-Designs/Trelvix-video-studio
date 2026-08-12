@@ -1,10 +1,12 @@
-export type QualityMode = 'Omni Flash' | 'Creative Quality' | 'Super Creative Quality' | 'Creative (sora-2)' | 'Super Creative (sora-2-pro)';
+export type VideoModelOptionId = 'sora-2-720p' | 'sora-2-pro-720p' | 'sora-2-pro-1024p';
 
-export type AspectRatio = '9:16' | '16:9' | '1:1';
+export type QualityMode = 'Sora 2' | 'Sora 2 Pro (720p)' | 'Sora 2 Pro (1024p)' | 'Creative Quality' | 'Super Creative Quality' | string;
 
-export type DurationOption = '4s' | '6s' | '8s' | '12s' | '10s';
+export type AspectRatio = '16:9' | '9:16';
 
-export type ResolutionOption = '720p' | '1080p' | '4K';
+export type DurationOption = '4s' | '8s' | '12s';
+
+export type ResolutionOption = '720p' | '1024p';
 
 export type BatchCount = 'x1' | 'x2' | 'x3' | 'x4';
 

@@ -4,6 +4,7 @@ import { INITIAL_HERO_SLIDES, INITIAL_PROJECTS } from './data/mockData';
 import { Navbar } from './components/Navbar';
 import { HomeDashboard } from './components/HomeDashboard';
 import { ProjectWorkspace } from './components/ProjectWorkspace';
+import { BillingPage } from './components/BillingPage';
 import { VideoModal } from './components/VideoModal';
 import { TopUpModal } from './components/TopUpModal';
 import { SettingsModal } from './components/SettingsModal';
@@ -32,8 +33,8 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  // View state: 'home' | 'project'
-  const [currentView, setCurrentView] = useState<'home' | 'project'>('home');
+  // View state: 'home' | 'project' | 'billing'
+  const [currentView, setCurrentView] = useState<'home' | 'project' | 'billing'>('home');
   const [activeProject, setActiveProject] = useState<Project | null>(null);
 
   // App data state
@@ -134,7 +135,7 @@ export default function App() {
   // Modals & Settings state
   const [selectedVideo, setSelectedVideo] = useState<VideoGeneration | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'general' | 'credits' | 'history' | 'payment'>('credits');
+  const [settingsTab, setSettingsTab] = useState<'billings' | 'support' | 'general'>('billings');
   const [searchQuery, setSearchQuery] = useState('');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
@@ -204,11 +205,13 @@ export default function App() {
         onNewProject={handleNewProject}
         credits={credits}
         onOpenTopUp={() => {
-          setSettingsTab('credits');
-          setIsSettingsOpen(true);
+          setCurrentView('billing');
+        }}
+        onOpenBilling={() => {
+          setCurrentView('billing');
         }}
         onOpenSettings={() => {
-          setSettingsTab('credits');
+          setSettingsTab('billings');
           setIsSettingsOpen(true);
         }}
         isDarkMode={isDarkMode}
@@ -223,7 +226,15 @@ export default function App() {
       />
 
       {/* Main View Router */}
-      {currentView === 'home' ? (
+      {currentView === 'billing' ? (
+        <BillingPage
+          currentCredits={credits}
+          onCreditsUpdated={setCredits}
+          onBackToHome={() => setCurrentView('home')}
+          onOpenWorkspace={() => setCurrentView('project')}
+          userProfile={userProfile}
+        />
+      ) : currentView === 'home' ? (
         <HomeDashboard
           heroSlides={INITIAL_HERO_SLIDES}
           projects={projects}
@@ -246,8 +257,9 @@ export default function App() {
           isMobileSidebarOpen={isMobileSidebarOpen}
           onCloseMobileSidebar={() => setIsMobileSidebarOpen(false)}
           userProfile={userProfile}
+          onOpenBilling={() => setCurrentView('billing')}
           onOpenSettings={() => {
-            setSettingsTab('credits');
+            setSettingsTab('billings');
             setIsSettingsOpen(true);
           }}
           onReturnToMainApp={handleReturnToMainApp}

@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { getPackageById } from './videoStudioDb';
 
 dotenv.config();
 
@@ -156,16 +157,20 @@ export async function createPayPalOrder(params: {
 /**
  * Capture a PayPal Order server-side
  */
-export async function capturePayPalOrder(orderId: string) {
+export async function capturePayPalOrder(orderId: string, packageId?: string) {
   const { clientId, clientSecret, apiBase } = getPayPalConfig();
 
   if (!clientId || !clientSecret || orderId.startsWith('MOCK-ORDER-')) {
-    // Development fallback capture response
+    let mockAmount = '59.99';
+    if (packageId) {
+      const pkg = await getPackageById(packageId);
+      if (pkg) mockAmount = pkg.price_usd.toFixed(2);
+    }
     return {
       id: orderId,
       status: 'COMPLETED',
       captureId: `MOCK-CAPTURE-${Date.now()}`,
-      amount: '9.99',
+      amount: mockAmount,
       currency: 'USD',
       payer: { email_address: 'studio.user@trelvixai.com' },
       isMock: true,

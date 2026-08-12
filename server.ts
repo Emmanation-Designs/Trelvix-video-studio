@@ -9,14 +9,23 @@ import {
   getUserWallet,
   getCreditPackages,
   getPackageById,
-  getGenerationCreditCost,
-  deductUserCredits,
+  reserveUserCredits,
+  convertReservationToConsumed,
+  releaseOrRefundReservation,
   refundUserCredits,
-  refundGenerationCreditsOnce,
   recordPendingPayPalOrder,
   processVerifiedPayPalPayment,
   getUserTransactionHistory,
+  VideoGenerationRecord,
+  memoryGenerationsDB,
 } from './server/videoStudioDb.js';
+import {
+  findVideoModelConfig,
+  resolveOpenAiSize,
+  calculateRequiredCredits,
+  calculateCostAnalysis,
+  VIDEO_MODELS,
+} from './server/videoPricingConfig.js';
 import {
   createPayPalOrder,
   capturePayPalOrder,
@@ -24,23 +33,6 @@ import {
 } from './server/paypal.js';
 
 dotenv.config();
-
-export interface VideoGenerationRecord {
-  id: string; // UUID
-  user_id: string; // UUID
-  provider_job_id: string; // TEXT
-  prompt: string;
-  status: 'queued' | 'processing' | 'completed' | 'failed';
-  video_url?: string;
-  duration: number; // INTEGER (seconds: 4, 6, 8, 12)
-  resolution: string; // TEXT ('1080p', '720p', etc.)
-  quality: string; // TEXT ('creative', 'super_creative')
-  refunded: boolean;
-  created_at: string;
-  error_message?: string;
-}
-
-const memoryGenerationsDB = new Map<string, VideoGenerationRecord>();
 
 function handleAuthOrServerError(res: Response, err: any, default500Message: string) {
   const message = err?.message || default500Message;
@@ -136,11 +128,39 @@ export async function createExpressApp() {
           priceUsd: pkg.price_usd,
           estimatedGenerations: pkg.estimated_generations,
           active: pkg.active,
+          badge: pkg.badge,
+          pricePerCreditFormatted: pkg.price_usd ? `$${(pkg.price_usd / pkg.credits).toFixed(4)}` : undefined,
         })),
       });
     } catch (err: any) {
       console.error('Error fetching credit packages:', err);
       res.status(500).json({ success: false, error: 'Failed fetching credit packages' });
+    }
+  });
+
+  // GET /api/video-studio/models - Fetch central OpenAI video models configuration
+  app.get('/api/video-studio/models', async (_req: Request, res: Response) => {
+    res.json({
+      success: true,
+      models: VIDEO_MODELS,
+    });
+  });
+
+  // GET /api/video-studio/admin/cost-analysis - Internal cost calculation view/endpoint
+  app.get('/api/video-studio/admin/cost-analysis', async (req: Request, res: Response) => {
+    try {
+      const model = (req.query.model as string) || 'sora-2-720p';
+      const seconds = parseInt((req.query.seconds as string) || '4', 10);
+      const batchCount = parseInt((req.query.batchCount as string) || '1', 10);
+
+      const metrics = calculateCostAnalysis(model, seconds, batchCount);
+      res.json({
+        success: true,
+        models: VIDEO_MODELS,
+        metrics,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || 'Error generating cost analysis' });
     }
   });
 
@@ -239,7 +259,7 @@ export async function createExpressApp() {
         return;
       }
 
-      const captureResult = await capturePayPalOrder(orderId);
+      const captureResult = await capturePayPalOrder(orderId, packageId);
 
       if (captureResult.status !== 'COMPLETED') {
         res.status(400).json({
@@ -350,12 +370,13 @@ export async function createExpressApp() {
       const user = await verifyUserToken(req);
       const {
         prompt,
-        negativePrompt,
         model,
-        quality = 'creative',
-        duration = '6s',
-        resolution = '1080p',
-        aspectRatio = '16:9',
+        quality,
+        duration,
+        seconds,
+        resolution,
+        size,
+        aspectRatio,
         batchCount = 'x1',
         imageInput,
         inputReferenceImage,
@@ -367,38 +388,42 @@ export async function createExpressApp() {
       }
 
       const count = parseInt((batchCount || 1).toString().replace('x', ''), 10) || 1;
-      const durationNum = typeof duration === 'number'
-        ? duration
-        : parseInt((duration || '6s').toString().replace('s', ''), 10) || 6;
-      const qualityMode = quality.toLowerCase().includes('super') ? 'super_creative' : 'creative';
+      const rawSec = seconds || duration;
+      const durationNum = typeof rawSec === 'number'
+        ? rawSec
+        : parseInt((rawSec || '4s').toString().replace('s', ''), 10) || 4;
+      const validSeconds = [4, 8, 12].includes(durationNum) ? durationNum : 4;
 
-      // 1. Calculate credit cost
-      const creditCost = await getGenerationCreditCost(qualityMode, `${durationNum}s`, count);
+      const modelOption = findVideoModelConfig(model || quality || '', resolution);
+      const openAiSize = size || resolveOpenAiSize(modelOption.id, aspectRatio || '16:9');
+
+      // 1. Calculate credit cost authoritatively on backend
+      const creditCost = calculateRequiredCredits(modelOption.id, validSeconds, count);
 
       // 2. Check wallet balance
       const wallet = await getUserWallet(user.id);
-      if (wallet.balance < creditCost) {
+      if (wallet.available_credits < creditCost) {
         res.status(402).json({
           success: false,
-          error: `Insufficient Video Studio credits. Generation costs ${creditCost} credits, but your balance is ${wallet.balance}.`,
-          remainingCredits: wallet.balance,
+          error: `INSUFFICIENT_CREDITS: Required ${creditCost} credits, but available balance is ${wallet.available_credits}.`,
+          remainingCredits: wallet.available_credits,
           creditCostRequired: creditCost,
         });
         return;
       }
 
-      // 3. Atomically deduct credits
-      const deduction = await deductUserCredits(
+      // 3. Atomically RESERVE credits
+      const reservation = await reserveUserCredits(
         user.id,
         creditCost,
-        `Video Generation (${qualityMode}, ${durationNum}s, x${count})`
+        `Video Generation (${modelOption.displayName}, ${validSeconds}s, ${openAiSize}, x${count})`
       );
 
-      if (!deduction.success) {
+      if (!reservation.success) {
         res.status(402).json({
           success: false,
-          error: deduction.error || 'Failed deducting generation credits',
-          remainingCredits: wallet.balance,
+          error: reservation.error || 'INSUFFICIENT_CREDITS: Failed reserving credits',
+          remainingCredits: wallet.available_credits,
         });
         return;
       }
@@ -411,16 +436,18 @@ export async function createExpressApp() {
         const generationUuid = crypto.randomUUID();
         const costPerVideo = Math.round(creditCost / count);
 
-        // First insert row into video_generations with status = 'queued'
         const initialRecord: VideoGenerationRecord = {
           id: generationUuid,
           user_id: user.id,
           provider_job_id: `pending_${generationUuid}`,
           prompt: prompt.trim(),
           status: 'queued',
-          duration: durationNum,
-          resolution,
-          quality: qualityMode,
+          duration: validSeconds,
+          resolution: openAiSize,
+          quality: modelOption.id,
+          credits_reserved: costPerVideo,
+          credits_consumed: 0,
+          credit_status: 'reserved',
           refunded: false,
           created_at: new Date().toISOString(),
         };
@@ -434,16 +461,12 @@ export async function createExpressApp() {
         try {
           const genResult = await requestOpenAiVideoGeneration({
             prompt: prompt.trim(),
-            negativePrompt,
-            model,
-            quality: qualityMode,
-            duration: durationNum,
-            resolution,
-            aspectRatio,
+            model: modelOption.model,
+            seconds: validSeconds,
+            size: openAiSize,
             imageInput: imageInput || inputReferenceImage,
           });
 
-          // Update record with provider_job_id and status = 'processing'
           const providerJobId = genResult.providerJobId;
           const updatedRecord: VideoGenerationRecord = {
             ...initialRecord,
@@ -467,13 +490,20 @@ export async function createExpressApp() {
 
           createdGenerations.push(updatedRecord);
         } catch (openAiError: any) {
-          // On OpenAI error: refund credits for this video item immediately and mark status = 'failed'
+          // Provider job creation failure: release/refund the reservation immediately
           console.error(`OpenAI Video dispatch failed for item ${i + 1}/${count}:`, openAiError);
-          const refundRes = await refundUserCredits(user.id, costPerVideo, `OpenAI dispatch error: ${openAiError.message}`);
+          
+          const releaseRes = await releaseOrRefundReservation({
+            userId: user.id,
+            providerJobId: `pending_${generationUuid}`,
+            creditsToRefund: costPerVideo,
+            reason: `PROVIDER_REQUEST_FAILED: ${openAiError.message}`,
+          });
 
           const failedRecord: VideoGenerationRecord = {
             ...initialRecord,
             status: 'failed',
+            credit_status: 'refunded',
             refunded: true,
             error_message: openAiError.message || 'Failed to dispatch generation job to OpenAI',
           };
@@ -483,6 +513,7 @@ export async function createExpressApp() {
               .from('video_generations')
               .update({
                 status: 'failed',
+                credit_status: 'refunded',
                 refunded: true,
                 error_message: failedRecord.error_message,
               })
@@ -493,16 +524,17 @@ export async function createExpressApp() {
 
           res.status(500).json({
             success: false,
-            error: `Generation request failed: ${openAiError.message}. Your ${costPerVideo} credits have been refunded.`,
-            remainingCredits: refundRes.balance,
+            error: `PROVIDER_REQUEST_FAILED: ${openAiError.message}. Reserved credits released.`,
+            remainingCredits: releaseRes.balance,
           });
           return;
         }
       }
 
+      const freshWallet = await getUserWallet(user.id);
       res.json({
         success: true,
-        remainingCredits: deduction.balance,
+        remainingCredits: freshWallet.available_credits,
         creditCost,
         videos: createdGenerations.map((g) => ({
           id: g.id,
@@ -576,16 +608,30 @@ export async function createExpressApp() {
       const statusResult = await checkOpenAiVideoStatus(providerJobId, user.id);
 
       if (statusResult.status === 'completed') {
+        const costToConsume = record?.credits_reserved || calculateRequiredCredits(record?.quality || 'sora-2-720p', record?.duration || 4, 1);
+
+        // Convert reservation to consumed idempotently
+        await convertReservationToConsumed({
+          userId: user.id,
+          providerJobId,
+          credits: costToConsume,
+          description: `Generation completed for job ${providerJobId}`,
+        });
+
         if (client && record) {
           await client
             .from('video_generations')
             .update({
               status: 'completed',
+              credit_status: 'consumed',
+              credits_consumed: costToConsume,
               video_url: statusResult.videoUrl,
             })
             .eq('id', record.id);
         } else if (record) {
           record.status = 'completed';
+          record.credit_status = 'consumed';
+          record.credits_consumed = costToConsume;
           record.video_url = statusResult.videoUrl;
           memoryGenerationsDB.set(record.id, record);
           memoryGenerationsDB.set(providerJobId, record);
@@ -604,14 +650,15 @@ export async function createExpressApp() {
           },
         });
         return;
-      } else if (statusResult.status === 'failed') {
-        const costToRefund = record ? await getGenerationCreditCost(record.quality, `${record.duration}s`, 1) : 15;
+      } else if (statusResult.status === 'failed' || (statusResult.status as string) === 'expired') {
+        const costToRefund = record?.credits_reserved || calculateRequiredCredits(record?.quality || 'sora-2-720p', record?.duration || 4, 1);
 
-        await refundGenerationCreditsOnce({
+        // Release reservation exact-once
+        await releaseOrRefundReservation({
           userId: user.id,
           providerJobId,
           creditsToRefund: costToRefund,
-          reason: `Asynchronous generation failed: ${statusResult.errorMessage || 'Unknown AI error'}`,
+          reason: `PROVIDER_GENERATION_FAILED: ${statusResult.errorMessage || 'Generation failed on provider server'}`,
         });
 
         if (client && record) {
@@ -619,12 +666,14 @@ export async function createExpressApp() {
             .from('video_generations')
             .update({
               status: 'failed',
+              credit_status: 'refunded',
               error_message: statusResult.errorMessage,
               refunded: true,
             })
             .eq('id', record.id);
         } else if (record) {
           record.status = 'failed';
+          record.credit_status = 'refunded';
           record.error_message = statusResult.errorMessage;
           record.refunded = true;
           memoryGenerationsDB.set(record.id, record);
@@ -634,7 +683,7 @@ export async function createExpressApp() {
         res.json({
           success: true,
           status: 'failed',
-          error: statusResult.errorMessage || 'Generation failed on OpenAI server',
+          error: statusResult.errorMessage || 'PROVIDER_GENERATION_FAILED',
           video: {
             id: record?.id || providerJobId,
             providerJobId,
@@ -647,7 +696,7 @@ export async function createExpressApp() {
         return;
       }
 
-      // Status is queued or processing
+      // Status is queued or processing - NO CREDIT MUTATION
       res.json({
         success: true,
         status: 'processing',
@@ -769,22 +818,36 @@ export async function createExpressApp() {
               if (statusCheck.status === 'completed' && statusCheck.videoUrl) {
                 rec.status = 'completed';
                 rec.video_url = statusCheck.videoUrl;
+                rec.credit_status = 'consumed';
+                const costToConsume = rec.credits_reserved || calculateRequiredCredits(rec.quality, rec.duration, 1);
+                rec.credits_consumed = costToConsume;
+
+                await convertReservationToConsumed({
+                  userId: user.id,
+                  providerJobId: rec.provider_job_id,
+                  credits: costToConsume,
+                  description: `Generation completed for job ${rec.provider_job_id}`,
+                });
+
                 if (client) {
-                  await client.from('video_generations').update({ status: 'completed', video_url: statusCheck.videoUrl }).eq('id', rec.id);
+                  await client.from('video_generations').update({ status: 'completed', credit_status: 'consumed', credits_consumed: costToConsume, video_url: statusCheck.videoUrl }).eq('id', rec.id);
                 }
-              } else if (statusCheck.status === 'failed') {
+              } else if (statusCheck.status === 'failed' || (statusCheck.status as string) === 'expired') {
                 rec.status = 'failed';
                 rec.error_message = statusCheck.errorMessage;
-                const costToRefund = await getGenerationCreditCost(rec.quality, `${rec.duration}s`, 1);
-                await refundGenerationCreditsOnce({
+                rec.credit_status = 'refunded';
+                rec.refunded = true;
+                const costToRefund = rec.credits_reserved || calculateRequiredCredits(rec.quality, rec.duration, 1);
+
+                await releaseOrRefundReservation({
                   userId: user.id,
                   providerJobId: rec.provider_job_id,
                   creditsToRefund: costToRefund,
-                  reason: `Asynchronous generation failed: ${statusCheck.errorMessage || 'Unknown AI error'}`,
+                  reason: `PROVIDER_GENERATION_FAILED: ${statusCheck.errorMessage || 'Generation failed on provider server'}`,
                 });
-                rec.refunded = true;
+
                 if (client) {
-                  await client.from('video_generations').update({ status: 'failed', refunded: true, error_message: statusCheck.errorMessage }).eq('id', rec.id);
+                  await client.from('video_generations').update({ status: 'failed', credit_status: 'refunded', refunded: true, error_message: statusCheck.errorMessage }).eq('id', rec.id);
                 }
               }
             }

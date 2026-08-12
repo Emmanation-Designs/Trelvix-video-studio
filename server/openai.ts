@@ -6,13 +6,11 @@ function getOpenAiApiKey(): string {
 
 interface OpenAiVideoRequestOptions {
   prompt: string;
-  negativePrompt?: string;
-  model?: string;
-  quality?: string;
-  duration?: string | number;
-  resolution?: string;
-  aspectRatio?: string;
+  model: 'sora-2' | 'sora-2-pro' | string;
+  seconds: number; // 4, 8, or 12
+  size: string;    // '1280x720' | '720x1280' | '1792x1024' | '1024x1792'
   imageInput?: string;
+  inputReference?: string;
 }
 
 export async function requestOpenAiVideoGeneration(
@@ -23,23 +21,22 @@ export async function requestOpenAiVideoGeneration(
     throw new Error('OPENAI_API_KEY environment variable is required for real video generation.');
   }
 
-  const qualityMode = (options.quality || '').toLowerCase().includes('super') ? 'super_creative' : 'creative';
-  const durationNum = typeof options.duration === 'number'
-    ? options.duration
-    : parseInt((options.duration || '6s').toString().replace('s', ''), 10) || 6;
+  // Ensure seconds is valid (4, 8, or 12)
+  const validSeconds = [4, 8, 12].includes(Number(options.seconds)) ? Number(options.seconds) : 4;
 
-  const modelName = qualityMode === 'super_creative' ? 'sora-1.0' : 'sora-1.0-turbo';
+  // Ensure model is valid
+  const validModel = options.model === 'sora-2-pro' ? 'sora-2-pro' : 'sora-2';
 
   const payload: Record<string, any> = {
-    model: options.model || modelName,
+    model: validModel,
     prompt: options.prompt,
-    duration: durationNum,
-    resolution: options.resolution || '1080p',
-    aspect_ratio: options.aspectRatio || '16:9',
+    seconds: validSeconds,
+    size: options.size || '1280x720',
   };
 
-  if (options.imageInput) {
-    payload.input_reference_image = options.imageInput;
+  const imageRef = options.inputReference || options.imageInput;
+  if (imageRef) {
+    payload.input_reference = imageRef;
   }
 
   const response = await fetch('https://api.openai.com/v1/videos', {

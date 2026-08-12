@@ -23,6 +23,7 @@ import {
   Upload,
   FolderPlus,
   Video,
+  Zap,
   ArrowLeft,
   HelpCircle,
   Settings,
@@ -56,6 +57,7 @@ interface ProjectWorkspaceProps {
   onCloseMobileSidebar?: () => void;
   userProfile?: UserProfileData | null;
   onOpenSettings?: () => void;
+  onOpenBilling?: () => void;
   onReturnToMainApp?: () => void;
   onOpenSupport?: () => void;
   onSignOut?: () => void;
@@ -120,6 +122,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   onCloseMobileSidebar,
   userProfile,
   onOpenSettings,
+  onOpenBilling,
   onReturnToMainApp,
   onOpenSupport,
   onSignOut
@@ -141,16 +144,16 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   // Generation settings
   const [mode, setMode] = useState<GenerationModeType>('Text-to-Video');
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
-  const [quality, setQuality] = useState<QualityMode>('Creative Quality');
-  const [duration, setDuration] = useState<DurationOption>('6s');
-  const [resolution, setResolution] = useState<ResolutionOption>('1080p');
-  const [batchCount, setBatchCount] = useState<BatchCount>('x2');
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
+  const [quality, setQuality] = useState<QualityMode>('Sora 2');
+  const [duration, setDuration] = useState<DurationOption>('4s');
+  const [resolution, setResolution] = useState<ResolutionOption>('720p');
+  const [batchCount, setBatchCount] = useState<BatchCount>('x1');
 
   // Generation process state
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingProgress, setGeneratingProgress] = useState(15);
-  const [generatingCount, setGeneratingCount] = useState(2);
+  const [generatingCount, setGeneratingCount] = useState(1);
 
   // Characters & Scenes State
   const [characterInput, setCharacterInput] = useState('');
@@ -167,19 +170,19 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   // Credit calculation matching authoritative server rates
   const calculatedCreditCost = (() => {
     const batchMultiplier = parseInt(batchCount.replace('x', ''), 10) || 1;
-    const durSec = parseInt(duration.replace('s', ''), 10) || 6;
-    const isSuper = quality.toLowerCase().includes('super');
-    let baseRate = 15;
-    if (!isSuper) {
-      if (durSec === 4) baseRate = 10;
-      else if (durSec === 6) baseRate = 15;
-      else if (durSec === 8) baseRate = 20;
-      else if (durSec === 12) baseRate = 30;
+    const durSec = parseInt(duration.replace('s', ''), 10) || 4;
+    const validSec = [4, 8, 12].includes(durSec) ? durSec : 4;
+
+    const isPro = quality.includes('Pro') || quality.includes('Super');
+    const is1024 = resolution === '1024p' || quality.includes('1024');
+
+    let baseRate = 5;
+    if (!isPro) {
+      baseRate = Math.round((validSec / 4) * 5);
+    } else if (is1024) {
+      baseRate = Math.round((validSec / 4) * 25);
     } else {
-      if (durSec === 4) baseRate = 20;
-      else if (durSec === 6) baseRate = 30;
-      else if (durSec === 8) baseRate = 40;
-      else if (durSec === 12) baseRate = 60;
+      baseRate = Math.round((validSec / 4) * 15);
     }
     return baseRate * batchMultiplier;
   })();
@@ -224,8 +227,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: attachedImage ? `[Image Reference] ${promptInput}` : promptInput,
-          model: quality === 'Super Creative Quality' ? 'sora-1.0' : 'sora-1.0-turbo',
-          quality: quality === 'Super Creative Quality' ? 'super_creative' : 'creative',
+          model: quality,
+          quality: quality,
           duration,
           resolution,
           aspectRatio,
@@ -570,6 +573,17 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             >
               <Layers className="w-4 h-4 text-emerald-500 shrink-0" />
               <span className={sidebarCollapsed ? 'md:hidden' : ''}>Scenes</span>
+            </button>
+
+            <button
+              onClick={() => {
+                onCloseMobileSidebar?.();
+                if (onOpenBilling) onOpenBilling();
+              }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-xs font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 transition-all cursor-pointer"
+            >
+              <Zap className="w-4 h-4 text-emerald-500 shrink-0 fill-emerald-500/20" />
+              <span className={sidebarCollapsed ? 'md:hidden' : ''}>Billing</span>
             </button>
 
           </div>

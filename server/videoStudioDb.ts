@@ -1,18 +1,21 @@
 import { getSupabaseAdmin } from './db';
+import {
+  calculateRequiredCredits,
+  getFormattedPackages,
+  OFFICIAL_CREDIT_PACKAGES,
+  VideoCreditPackage,
+  VIDEO_MODELS,
+  findVideoModelConfig,
+} from './videoPricingConfig';
 
-export interface VideoCreditPackage {
-  id: string;
-  name: string;
-  credits: number;
-  price_usd: number;
-  active: boolean;
-  sort_order: number;
-  estimated_generations?: number;
-}
+export type { VideoCreditPackage };
 
 export interface VideoCreditWallet {
   user_id: string;
-  balance: number;
+  balance: number; // Represents available_credits
+  available_credits: number;
+  reserved_credits: number;
+  consumed_credits: number;
   lifetime_credits_purchased: number;
   lifetime_credits_used: number;
   created_at: string;
@@ -22,7 +25,7 @@ export interface VideoCreditWallet {
 export interface VideoCreditTransaction {
   id: string;
   user_id: string;
-  type: 'PURCHASE' | 'USAGE' | 'REFUND' | 'ADJUSTMENT';
+  type: 'PURCHASE' | 'RESERVATION' | 'CONSUMPTION' | 'REFUND' | 'RELEASE' | 'ADJUSTMENT' | 'USAGE';
   credits: number;
   amount: number;
   currency: string;
@@ -34,117 +37,88 @@ export interface VideoCreditTransaction {
   created_at: string;
 }
 
-export interface GenerationRate {
-  quality_mode: string;
-  duration_seconds: number;
-  credits_cost: number;
+export interface VideoGenerationRecord {
+  id: string;
+  user_id: string;
+  provider_job_id: string;
+  prompt: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'expired';
+  duration: number; // in seconds (4, 8, 12)
+  resolution: string; // e.g. '1280x720', '1920x1080'
+  quality: string; // model option id e.g. 'sora-2-720p'
+  credits_reserved: number;
+  credits_consumed: number;
+  credit_status: 'reserved' | 'consumed' | 'refunded';
+  video_url?: string;
+  refunded: boolean;
+  created_at: string;
+  completed_at?: string;
+  failed_at?: string;
+  refund_processed_at?: string;
+  error_message?: string;
 }
 
-// In-Memory Fallback Stores
-const memoryPackages: VideoCreditPackage[] = [
-  { id: 'pkg-starter', name: 'Starter', credits: 40, price_usd: 4.99, active: true, sort_order: 1 },
-  { id: 'pkg-creator', name: 'Creator', credits: 100, price_usd: 9.99, active: true, sort_order: 2 },
-  { id: 'pkg-studio', name: 'Studio', credits: 220, price_usd: 19.99, active: true, sort_order: 3 },
-  { id: 'pkg-pro-studio', name: 'Pro Studio', credits: 500, price_usd: 39.99, active: true, sort_order: 4 },
-];
-
-const memoryGenerationRates: GenerationRate[] = [
-  { quality_mode: 'creative', duration_seconds: 4, credits_cost: 10 },
-  { quality_mode: 'creative', duration_seconds: 6, credits_cost: 15 },
-  { quality_mode: 'creative', duration_seconds: 8, credits_cost: 20 },
-  { quality_mode: 'creative', duration_seconds: 12, credits_cost: 30 },
-  { quality_mode: 'super_creative', duration_seconds: 4, credits_cost: 20 },
-  { quality_mode: 'super_creative', duration_seconds: 6, credits_cost: 30 },
-  { quality_mode: 'super_creative', duration_seconds: 8, credits_cost: 40 },
-  { quality_mode: 'super_creative', duration_seconds: 12, credits_cost: 60 },
-];
-
+// In-Memory Fallback Databases
 const memoryWallets = new Map<string, VideoCreditWallet>();
 const memoryTransactions: VideoCreditTransaction[] = [];
+export const memoryGenerationsDB = new Map<string, VideoGenerationRecord>();
 
 /**
- * Fetch all active Video Credit Packages with dynamic estimated generations
+ * Fetch all active Video Credit Packages with dynamic estimated generations.
+ * ALWAYS returns the official credit package ladder (50 to 30,000 credits).
  */
 export async function getCreditPackages(): Promise<VideoCreditPackage[]> {
+  const baseGenCost = 5;
   const client = getSupabaseAdmin();
-  let packages: VideoCreditPackage[] = [];
 
   if (client) {
     try {
-      const { data, error } = await client
-        .from('video_credit_packages')
-        .select('*')
-        .eq('active', true)
-        .order('sort_order', { ascending: true });
+      const officialIds = OFFICIAL_CREDIT_PACKAGES.map((p) => p.id);
+      await client.from('video_credit_packages').delete().not('id', 'in', `(${officialIds.map(id => `'${id}'`).join(',')})`);
 
-      if (!error && data && data.length > 0) {
-        packages = data.map((item) => ({
-          id: item.id,
-          name: item.name,
-          credits: item.credits,
-          price_usd: parseFloat(item.price_usd),
-          active: item.active,
-          sort_order: item.sort_order,
-        }));
-      }
+      await client.from('video_credit_packages').upsert(
+        OFFICIAL_CREDIT_PACKAGES.map((p) => ({
+          id: p.id,
+          name: p.name,
+          credits: p.credits,
+          price_usd: p.price_usd,
+          active: p.active,
+          sort_order: p.sort_order,
+        })),
+        { onConflict: 'id' }
+      );
     } catch (err) {
-      console.warn('Supabase packages fetch failed, using fallback packages:', err);
+      // Fallback silently if table does not exist
     }
   }
 
-  if (packages.length === 0) {
-    packages = [...memoryPackages];
-  }
-
-  // Calculate estimated generations based on standard creative 6s cost (15 credits)
-  const baseGenCost = 15;
-  return packages.map((pkg) => ({
+  return OFFICIAL_CREDIT_PACKAGES.map((pkg) => ({
     ...pkg,
     estimated_generations: Math.floor(pkg.credits / baseGenCost),
   }));
 }
 
 /**
- * Get package by ID safely from database or memory
+ * Get package by ID safely (Server-Authoritative Price Resolution)
  */
 export async function getPackageById(packageId: string): Promise<VideoCreditPackage | null> {
   const pkgs = await getCreditPackages();
-  return pkgs.find((p) => p.id === packageId) || null;
-}
+  
+  let found = pkgs.find(
+    (p) =>
+      p.id === packageId ||
+      p.id === packageId.replace('pkg-', 'VIDEO_') ||
+      p.id === packageId.replace('VIDEO_', 'pkg-')
+  );
+  if (found) return found;
 
-/**
- * Calculate generation cost dynamically based on quality and duration
- */
-export async function getGenerationCreditCost(qualityMode: string, durationStr: string, batchCount: number = 1): Promise<number> {
-  const durationSeconds = parseInt(durationStr.replace('s', ''), 10) || 6;
-  const normalizedQuality = qualityMode.toLowerCase().includes('super') ? 'super_creative' : 'creative';
-
-  const client = getSupabaseAdmin();
-  let rateCost: number | null = null;
-
-  if (client) {
-    try {
-      const { data } = await client
-        .from('video_generation_rates')
-        .select('credits_cost')
-        .eq('quality_mode', normalizedQuality)
-        .eq('duration_seconds', durationSeconds)
-        .single();
-
-      if (data) rateCost = data.credits_cost;
-    } catch {
-      // ignore
-    }
+  const numCredits = parseInt(packageId.replace(/[^0-9]/g, ''), 10);
+  if (numCredits > 0) {
+    found = pkgs.find((p) => p.credits === numCredits);
+    if (found) return found;
   }
 
-  if (rateCost === null) {
-    const rate = memoryGenerationRates.find(
-      (r) => r.quality_mode === normalizedQuality && r.duration_seconds === durationSeconds
-    );
-    rateCost = rate ? rate.credits_cost : (normalizedQuality === 'super_creative' ? 30 : 15);
-  }
-
-  return rateCost * Math.max(1, batchCount);
+  return pkgs[0] || null;
 }
 
 /**
@@ -162,29 +136,50 @@ export async function getUserWallet(userId: string): Promise<VideoCreditWallet> 
         .maybeSingle();
 
       if (!error && data) {
+        const available = typeof data.available_credits === 'number' ? data.available_credits : data.balance;
+        const reserved = data.reserved_credits || 0;
+        const consumed = data.consumed_credits || data.lifetime_credits_used || 0;
+
         return {
           user_id: data.user_id,
-          balance: data.balance,
-          lifetime_credits_purchased: data.lifetime_credits_purchased,
-          lifetime_credits_used: data.lifetime_credits_used,
+          balance: available,
+          available_credits: available,
+          reserved_credits: reserved,
+          consumed_credits: consumed,
+          lifetime_credits_purchased: data.lifetime_credits_purchased || 0,
+          lifetime_credits_used: consumed,
           created_at: data.created_at,
           updated_at: data.updated_at,
         };
       }
 
-      // Initialize default wallet with 0 credits if no row exists
+      // Initialize default wallet
+      const now = new Date().toISOString();
       const defaultWallet: VideoCreditWallet = {
         user_id: userId,
         balance: 0,
+        available_credits: 0,
+        reserved_credits: 0,
+        consumed_credits: 0,
         lifetime_credits_purchased: 0,
         lifetime_credits_used: 0,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        created_at: now,
+        updated_at: now,
       };
 
-      const { error: insertErr } = await client.from('video_credit_wallets').insert(defaultWallet);
+      const { error: insertErr } = await client.from('video_credit_wallets').insert({
+        user_id: userId,
+        balance: 0,
+        available_credits: 0,
+        reserved_credits: 0,
+        consumed_credits: 0,
+        lifetime_credits_purchased: 0,
+        lifetime_credits_used: 0,
+        created_at: now,
+        updated_at: now,
+      });
       if (insertErr) {
-        console.warn('Note: Default wallet creation in Supabase returned:', insertErr.message);
+        console.warn('Note: Default wallet insert returned:', insertErr.message);
       }
       return defaultWallet;
     } catch (err) {
@@ -194,13 +189,17 @@ export async function getUserWallet(userId: string): Promise<VideoCreditWallet> 
 
   let wallet = memoryWallets.get(userId);
   if (!wallet) {
+    const now = new Date().toISOString();
     wallet = {
       user_id: userId,
       balance: 0,
+      available_credits: 0,
+      reserved_credits: 0,
+      consumed_credits: 0,
       lifetime_credits_purchased: 0,
       lifetime_credits_used: 0,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      created_at: now,
+      updated_at: now,
     };
     memoryWallets.set(userId, wallet);
   }
@@ -209,201 +208,222 @@ export async function getUserWallet(userId: string): Promise<VideoCreditWallet> 
 }
 
 /**
- * Deduct credits from user wallet for generation atomically
+ * ATOMICALLY RESERVE CREDITS
+ * Subtracts from available_credits and adds to reserved_credits
  */
-export async function deductUserCredits(
+export async function reserveUserCredits(
   userId: string,
-  creditsToDeduct: number,
-  description: string
-): Promise<{ success: boolean; balance: number; error?: string }> {
+  creditsToReserve: number,
+  description: string,
+  metadata: Record<string, any> = {}
+): Promise<{ success: boolean; wallet?: VideoCreditWallet; error?: string }> {
   const client = getSupabaseAdmin();
+  const now = new Date().toISOString();
 
   if (client) {
     try {
-      // 1. Try atomic PostgreSQL function call via RPC
-      const { data: rpcData, error: rpcError } = await client.rpc('deduct_video_credits', {
-        p_user_id: userId,
-        p_credits_to_deduct: creditsToDeduct,
-      });
-
-      if (!rpcError && rpcData && rpcData.length > 0) {
-        const result = rpcData[0];
-        if (result.success) {
-          // Record transaction
-          await client.from('video_credit_transactions').insert({
-            user_id: userId,
-            type: 'USAGE',
-            credits: -creditsToDeduct,
-            amount: 0.00,
-            currency: 'USD',
-            status: 'COMPLETED',
-            metadata: { description },
-          });
-
-          return { success: true, balance: result.new_balance };
-        } else {
-          return {
-            success: false,
-            balance: result.new_balance,
-            error: `Insufficient Video Studio credits. Needed ${creditsToDeduct} credits, but your balance is ${result.new_balance}.`,
-          };
-        }
-      }
-
-      // 2. Fallback to atomic direct query if RPC is missing
       const wallet = await getUserWallet(userId);
-      if (wallet.balance < creditsToDeduct) {
+      if (wallet.available_credits < creditsToReserve) {
         return {
           success: false,
-          balance: wallet.balance,
-          error: `Insufficient Video Studio credits. Needed ${creditsToDeduct} credits, but your balance is ${wallet.balance}.`,
+          error: `INSUFFICIENT_CREDITS: Required ${creditsToReserve} credits, but available balance is ${wallet.available_credits}.`,
         };
       }
 
-      const newBalance = wallet.balance - creditsToDeduct;
-      const newUsed = wallet.lifetime_credits_used + creditsToDeduct;
-      const now = new Date().toISOString();
+      const newAvailable = wallet.available_credits - creditsToReserve;
+      const newReserved = wallet.reserved_credits + creditsToReserve;
 
       const { data: updatedRows, error: updateErr } = await client
         .from('video_credit_wallets')
-        .update({ balance: newBalance, lifetime_credits_used: newUsed, updated_at: now })
+        .update({
+          balance: newAvailable,
+          available_credits: newAvailable,
+          reserved_credits: newReserved,
+          updated_at: now,
+        })
         .eq('user_id', userId)
-        .gte('balance', creditsToDeduct)
+        .gte('balance', creditsToReserve)
         .select();
 
       if (!updateErr && updatedRows && updatedRows.length > 0) {
         await client.from('video_credit_transactions').insert({
           user_id: userId,
-          type: 'USAGE',
-          credits: -creditsToDeduct,
+          type: 'RESERVATION',
+          credits: -creditsToReserve,
           amount: 0.00,
           currency: 'USD',
           status: 'COMPLETED',
-          metadata: { description },
+          metadata: { description, ...metadata },
+          created_at: now,
         });
 
-        return { success: true, balance: updatedRows[0].balance };
+        const freshWallet = await getUserWallet(userId);
+        return { success: true, wallet: freshWallet };
       } else {
         const freshWallet = await getUserWallet(userId);
         return {
           success: false,
-          balance: freshWallet.balance,
-          error: `Insufficient Video Studio credits. Needed ${creditsToDeduct} credits, but your balance is ${freshWallet.balance}.`,
+          error: `INSUFFICIENT_CREDITS: Concurrent balance update. Required ${creditsToReserve} credits, but available balance is ${freshWallet.available_credits}.`,
         };
       }
     } catch (err: any) {
-      console.error('Error deducting credits in Supabase:', err);
+      console.error('Error reserving credits in Supabase:', err);
     }
   }
 
-  // Fallback memory wallet update (synchronous check & update)
+  // Memory fallback handling
   let wallet = memoryWallets.get(userId);
   if (!wallet) {
-    wallet = {
-      user_id: userId,
-      balance: 0,
-      lifetime_credits_purchased: 0,
-      lifetime_credits_used: 0,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    memoryWallets.set(userId, wallet);
+    wallet = await getUserWallet(userId);
   }
 
-  if (wallet.balance < creditsToDeduct) {
+  if (wallet.available_credits < creditsToReserve) {
     return {
       success: false,
-      balance: wallet.balance,
-      error: `Insufficient Video Studio credits. Needed ${creditsToDeduct} credits, but your balance is ${wallet.balance}.`,
+      error: `INSUFFICIENT_CREDITS: Required ${creditsToReserve} credits, but available balance is ${wallet.available_credits}.`,
     };
   }
 
-  const newBalance = wallet.balance - creditsToDeduct;
-  const newUsed = wallet.lifetime_credits_used + creditsToDeduct;
-  const now = new Date().toISOString();
-
-  wallet.balance = newBalance;
-  wallet.lifetime_credits_used = newUsed;
-  wallet.updated_at = now;
-
-  memoryTransactions.unshift({
-    id: `tx-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    user_id: userId,
-    type: 'USAGE',
-    credits: -creditsToDeduct,
-    amount: 0.00,
-    currency: 'USD',
-    status: 'COMPLETED',
-    metadata: { description },
-    created_at: now,
-  });
-
-  return { success: true, balance: newBalance };
-}
-
-/**
- * Refund credits to user wallet for failed generation
- */
-export async function refundUserCredits(
-  userId: string,
-  creditsToRefund: number,
-  reason: string,
-  extraMetadata: Record<string, any> = {}
-): Promise<{ success: boolean; balance: number }> {
-  const wallet = await getUserWallet(userId);
-  const client = getSupabaseAdmin();
-
-  const newBalance = wallet.balance + creditsToRefund;
-  const newUsed = Math.max(0, wallet.lifetime_credits_used - creditsToRefund);
-  const now = new Date().toISOString();
-
-  if (client) {
-    try {
-      await client
-        .from('video_credit_wallets')
-        .update({ balance: newBalance, lifetime_credits_used: newUsed, updated_at: now })
-        .eq('user_id', userId);
-
-      await client.from('video_credit_transactions').insert({
-        user_id: userId,
-        type: 'REFUND',
-        credits: creditsToRefund,
-        amount: 0.00,
-        currency: 'USD',
-        status: 'COMPLETED',
-        metadata: { reason, ...extraMetadata },
-      });
-
-      return { success: true, balance: newBalance };
-    } catch (err) {
-      console.error('Error refunding credits in Supabase:', err);
-    }
-  }
-
-  wallet.balance = newBalance;
-  wallet.lifetime_credits_used = newUsed;
+  wallet.available_credits -= creditsToReserve;
+  wallet.balance = wallet.available_credits;
+  wallet.reserved_credits += creditsToReserve;
   wallet.updated_at = now;
   memoryWallets.set(userId, wallet);
 
   memoryTransactions.unshift({
-    id: `tx-ref-${Date.now()}`,
+    id: `tx-res-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     user_id: userId,
-    type: 'REFUND',
-    credits: creditsToRefund,
+    type: 'RESERVATION',
+    credits: -creditsToReserve,
     amount: 0.00,
     currency: 'USD',
     status: 'COMPLETED',
-    metadata: { reason, ...extraMetadata },
+    metadata: { description, ...metadata },
     created_at: now,
   });
 
-  return { success: true, balance: newBalance };
+  return { success: true, wallet };
 }
 
 /**
- * Idempotently refund generation credits exactly once for a specific generation job
+ * CONVERT RESERVATION TO CONSUMED
+ * Deducts from reserved_credits and adds to consumed_credits
  */
-export async function refundGenerationCreditsOnce(params: {
+export async function convertReservationToConsumed(params: {
+  userId: string;
+  providerJobId: string;
+  credits: number;
+  description?: string;
+}): Promise<{ success: boolean; alreadyProcessed?: boolean }> {
+  const { userId, providerJobId, credits, description } = params;
+  const client = getSupabaseAdmin();
+  const now = new Date().toISOString();
+
+  if (client) {
+    try {
+      // 1. Idempotency check on generation record
+      const { data: genRecord } = await client
+        .from('video_generations')
+        .select('*')
+        .eq('provider_job_id', providerJobId)
+        .maybeSingle();
+
+      if (genRecord) {
+        if (genRecord.credit_status === 'consumed') {
+          return { success: true, alreadyProcessed: true };
+        }
+        if (genRecord.credit_status === 'refunded') {
+          return { success: true, alreadyProcessed: true };
+        }
+      }
+
+      // 2. Update generation record to consumed
+      if (genRecord) {
+        await client
+          .from('video_generations')
+          .update({
+            credit_status: 'consumed',
+            credits_consumed: credits,
+            completed_at: now,
+          })
+          .eq('provider_job_id', providerJobId)
+          .eq('credit_status', 'reserved');
+      }
+
+      // 3. Update wallet
+      const wallet = await getUserWallet(userId);
+      const newReserved = Math.max(0, wallet.reserved_credits - credits);
+      const newConsumed = wallet.consumed_credits + credits;
+
+      await client
+        .from('video_credit_wallets')
+        .update({
+          reserved_credits: newReserved,
+          consumed_credits: newConsumed,
+          lifetime_credits_used: newConsumed,
+          updated_at: now,
+        })
+        .eq('user_id', userId);
+
+      // 4. Ledger transaction
+      await client.from('video_credit_transactions').insert({
+        user_id: userId,
+        type: 'CONSUMPTION',
+        credits: -credits,
+        amount: 0.00,
+        currency: 'USD',
+        status: 'COMPLETED',
+        metadata: { providerJobId, description: description || 'Generation completion' },
+        created_at: now,
+      });
+
+      return { success: true, alreadyProcessed: false };
+    } catch (err) {
+      console.error('Error converting reservation to consumed in Supabase:', err);
+    }
+  }
+
+  // Memory fallback
+  const memGen = memoryGenerationsDB.get(providerJobId);
+  if (memGen) {
+    if (memGen.credit_status === 'consumed' || memGen.credit_status === 'refunded') {
+      return { success: true, alreadyProcessed: true };
+    }
+    memGen.credit_status = 'consumed';
+    memGen.credits_consumed = credits;
+    memGen.completed_at = now;
+  }
+
+  let wallet = memoryWallets.get(userId);
+  if (!wallet) {
+    wallet = await getUserWallet(userId);
+  }
+
+  wallet.reserved_credits = Math.max(0, wallet.reserved_credits - credits);
+  wallet.consumed_credits += credits;
+  wallet.lifetime_credits_used = wallet.consumed_credits;
+  wallet.updated_at = now;
+
+  memoryTransactions.unshift({
+    id: `tx-con-${Date.now()}`,
+    user_id: userId,
+    type: 'CONSUMPTION',
+    credits: -credits,
+    amount: 0.00,
+    currency: 'USD',
+    status: 'COMPLETED',
+    metadata: { providerJobId, description: description || 'Generation completion' },
+    created_at: now,
+  });
+
+  return { success: true, alreadyProcessed: false };
+}
+
+/**
+ * EXACT-ONCE REFUND / RELEASE RESERVATION
+ * Deducts from reserved_credits and adds back to available_credits
+ */
+export async function releaseOrRefundReservation(params: {
   userId: string;
   providerJobId: string;
   creditsToRefund: number;
@@ -411,15 +431,34 @@ export async function refundGenerationCreditsOnce(params: {
 }): Promise<{ success: boolean; balance: number; alreadyRefunded?: boolean }> {
   const { userId, providerJobId, creditsToRefund, reason } = params;
   const client = getSupabaseAdmin();
+  const now = new Date().toISOString();
 
   if (creditsToRefund <= 0) {
     const wallet = await getUserWallet(userId);
-    return { success: true, balance: wallet.balance, alreadyRefunded: false };
+    return { success: true, balance: wallet.available_credits, alreadyRefunded: false };
   }
 
   if (client) {
     try {
-      // Check existing refund transaction with this provider_job_id in metadata
+      // 1. Idempotency check on generation record
+      const { data: genRecord } = await client
+        .from('video_generations')
+        .select('*')
+        .eq('provider_job_id', providerJobId)
+        .maybeSingle();
+
+      if (genRecord) {
+        if (genRecord.credit_status === 'refunded' || genRecord.refunded) {
+          const wallet = await getUserWallet(userId);
+          return { success: true, balance: wallet.available_credits, alreadyRefunded: true };
+        }
+        if (genRecord.credit_status === 'consumed') {
+          const wallet = await getUserWallet(userId);
+          return { success: true, balance: wallet.available_credits, alreadyRefunded: true };
+        }
+      }
+
+      // Check existing refund transaction in ledger
       const { data: existingTx } = await client
         .from('video_credit_transactions')
         .select('id')
@@ -430,46 +469,117 @@ export async function refundGenerationCreditsOnce(params: {
 
       if (existingTx) {
         const wallet = await getUserWallet(userId);
-        return { success: true, balance: wallet.balance, alreadyRefunded: true };
+        return { success: true, balance: wallet.available_credits, alreadyRefunded: true };
       }
 
-      // Check if video generation record is already marked as refunded
-      const { data: genRecord } = await client
-        .from('video_generations')
-        .select('refunded')
-        .eq('provider_job_id', providerJobId)
-        .maybeSingle();
-
-      if (genRecord && genRecord.refunded) {
-        const wallet = await getUserWallet(userId);
-        return { success: true, balance: wallet.balance, alreadyRefunded: true };
+      // 2. Mark generation record as refunded
+      if (genRecord) {
+        await client
+          .from('video_generations')
+          .update({
+            credit_status: 'refunded',
+            refunded: true,
+            failed_at: now,
+            refund_processed_at: now,
+            error_message: reason,
+          })
+          .eq('provider_job_id', providerJobId);
       }
 
-      const res = await refundUserCredits(userId, creditsToRefund, reason, { provider_job_id: providerJobId });
+      // 3. Atomically restore wallet: available += creditsToRefund, reserved -= creditsToRefund
+      const wallet = await getUserWallet(userId);
+      const newAvailable = wallet.available_credits + creditsToRefund;
+      const newReserved = Math.max(0, wallet.reserved_credits - creditsToRefund);
 
       await client
-        .from('video_generations')
-        .update({ refunded: true })
-        .eq('provider_job_id', providerJobId);
+        .from('video_credit_wallets')
+        .update({
+          balance: newAvailable,
+          available_credits: newAvailable,
+          reserved_credits: newReserved,
+          updated_at: now,
+        })
+        .eq('user_id', userId);
 
-      return { success: true, balance: res.balance, alreadyRefunded: false };
+      // 4. Record ledger transaction
+      await client.from('video_credit_transactions').insert({
+        user_id: userId,
+        type: 'REFUND',
+        credits: creditsToRefund,
+        amount: 0.00,
+        currency: 'USD',
+        status: 'COMPLETED',
+        metadata: { provider_job_id: providerJobId, reason },
+        created_at: now,
+      });
+
+      return { success: true, balance: newAvailable, alreadyRefunded: false };
     } catch (err) {
-      console.error('Error checking double refund in Supabase:', err);
+      console.error('Error releasing reservation in Supabase:', err);
     }
   }
 
-  // Memory fallback idempotency check
-  const existingMemRefund = memoryTransactions.find(
-    (t) => t.user_id === userId && t.type === 'REFUND' && t.metadata?.provider_job_id === providerJobId
-  );
-
-  if (existingMemRefund) {
-    const wallet = await getUserWallet(userId);
-    return { success: true, balance: wallet.balance, alreadyRefunded: true };
+  // Memory fallback handling
+  const memGen = memoryGenerationsDB.get(providerJobId);
+  if (memGen) {
+    if (memGen.credit_status === 'refunded' || memGen.refunded || memGen.credit_status === 'consumed') {
+      const wallet = await getUserWallet(userId);
+      return { success: true, balance: wallet.available_credits, alreadyRefunded: true };
+    }
+    memGen.credit_status = 'refunded';
+    memGen.refunded = true;
+    memGen.failed_at = now;
+    memGen.refund_processed_at = now;
+    memGen.error_message = reason;
   }
 
-  const res = await refundUserCredits(userId, creditsToRefund, reason, { provider_job_id: providerJobId });
-  return { success: true, balance: res.balance, alreadyRefunded: false };
+  const existingMemTx = memoryTransactions.find(
+    (t) => t.user_id === userId && t.type === 'REFUND' && t.metadata?.provider_job_id === providerJobId
+  );
+  if (existingMemTx) {
+    const wallet = await getUserWallet(userId);
+    return { success: true, balance: wallet.available_credits, alreadyRefunded: true };
+  }
+
+  let wallet = memoryWallets.get(userId);
+  if (!wallet) {
+    wallet = await getUserWallet(userId);
+  }
+
+  wallet.available_credits += creditsToRefund;
+  wallet.balance = wallet.available_credits;
+  wallet.reserved_credits = Math.max(0, wallet.reserved_credits - creditsToRefund);
+  wallet.updated_at = now;
+
+  memoryTransactions.unshift({
+    id: `tx-ref-${Date.now()}`,
+    user_id: userId,
+    type: 'REFUND',
+    credits: creditsToRefund,
+    amount: 0.00,
+    currency: 'USD',
+    status: 'COMPLETED',
+    metadata: { provider_job_id: providerJobId, reason },
+    created_at: now,
+  });
+
+  return { success: true, balance: wallet.available_credits, alreadyRefunded: false };
+}
+
+/**
+ * Administrative Direct Refund / Credit Addition
+ */
+export async function refundUserCredits(
+  userId: string,
+  creditsToRefund: number,
+  reason: string = 'Administrative refund'
+): Promise<{ success: boolean; balance: number }> {
+  return releaseOrRefundReservation({
+    userId,
+    providerJobId: `admin_refund_${Date.now()}`,
+    creditsToRefund,
+    reason,
+  });
 }
 
 /**
@@ -532,14 +642,12 @@ export async function processVerifiedPayPalPayment(params: {
 }): Promise<{ success: boolean; creditsAdded: number; newBalance: number; alreadyProcessed?: boolean }> {
   const { userId, paypalOrderId, paypalCaptureId, packageId, amountPaid } = params;
 
-  // Retrieve the authoritative package from database/memory
   const pkg = await getPackageById(packageId);
   const creditsToAdd = pkg ? pkg.credits : 100;
   const client = getSupabaseAdmin();
 
   if (client) {
     try {
-      // Check if transaction with this PayPal capture or order is already COMPLETED (idempotency check)
       const { data: existingTx } = await client
         .from('video_credit_transactions')
         .select('*')
@@ -552,12 +660,11 @@ export async function processVerifiedPayPalPayment(params: {
         return {
           success: true,
           creditsAdded: existingTx.credits,
-          newBalance: currentWallet.balance,
+          newBalance: currentWallet.available_credits,
           alreadyProcessed: true,
         };
       }
 
-      // Update existing pending transaction or create completed transaction
       const { data: pendingTx } = await client
         .from('video_credit_transactions')
         .select('id')
@@ -589,16 +696,16 @@ export async function processVerifiedPayPalPayment(params: {
         });
       }
 
-      // Atomically update wallet
       const currentWallet = await getUserWallet(userId);
-      const newBalance = currentWallet.balance + creditsToAdd;
+      const newAvailable = currentWallet.available_credits + creditsToAdd;
       const newLifetime = currentWallet.lifetime_credits_purchased + creditsToAdd;
       const now = new Date().toISOString();
 
       await client
         .from('video_credit_wallets')
         .update({
-          balance: newBalance,
+          balance: newAvailable,
+          available_credits: newAvailable,
           lifetime_credits_purchased: newLifetime,
           updated_at: now,
         })
@@ -607,7 +714,7 @@ export async function processVerifiedPayPalPayment(params: {
       return {
         success: true,
         creditsAdded: creditsToAdd,
-        newBalance,
+        newBalance: newAvailable,
         alreadyProcessed: false,
       };
     } catch (err) {
@@ -627,7 +734,7 @@ export async function processVerifiedPayPalPayment(params: {
     return {
       success: true,
       creditsAdded: existingMemTx.credits,
-      newBalance: memWallet.balance,
+      newBalance: memWallet.available_credits,
       alreadyProcessed: true,
     };
   }
@@ -656,7 +763,8 @@ export async function processVerifiedPayPalPayment(params: {
   }
 
   const wallet = await getUserWallet(userId);
-  wallet.balance += creditsToAdd;
+  wallet.available_credits += creditsToAdd;
+  wallet.balance = wallet.available_credits;
   wallet.lifetime_credits_purchased += creditsToAdd;
   wallet.updated_at = new Date().toISOString();
   memoryWallets.set(userId, wallet);
@@ -664,7 +772,7 @@ export async function processVerifiedPayPalPayment(params: {
   return {
     success: true,
     creditsAdded: creditsToAdd,
-    newBalance: wallet.balance,
+    newBalance: wallet.available_credits,
     alreadyProcessed: false,
   };
 }
