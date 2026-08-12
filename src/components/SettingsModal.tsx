@@ -19,6 +19,7 @@ import {
   Sliders,
   CheckCircle2,
   Package,
+  HelpCircle,
 } from 'lucide-react';
 import { PayPalScriptProvider, PayPalButtons } from '@paypal/react-paypal-js';
 
@@ -107,6 +108,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [paypalClientId, setPaypalClientId] = useState<string>('test');
 
   // Load Wallet and Credit Packages
+  useEffect(() => {
+    if (activeTab === 'support') {
+      if (onOpenSupport) {
+        onOpenSupport();
+      } else {
+        window.location.href = 'https://trelvixai.com/support';
+      }
+    }
+  }, [activeTab, onOpenSupport]);
+
   const fetchWalletAndPackages = async () => {
     setLoadingPackages(true);
     try {
@@ -272,12 +283,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
 
             <button
-              onClick={() => setActiveTab('support')}
-              className={`flex-1 md:flex-initial flex items-center gap-2.5 px-3.5 py-3 rounded-2xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'support'
-                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-bold shadow-sm'
-                  : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-900'
-              }`}
+              onClick={() => {
+                if (onOpenSupport) {
+                  onOpenSupport();
+                } else {
+                  window.location.href = 'https://trelvixai.com/support';
+                }
+              }}
+              className="flex-1 md:flex-initial flex items-center gap-2.5 px-3.5 py-3 rounded-2xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-900"
             >
               <HelpCircle className="w-4 h-4 text-emerald-500 shrink-0" />
               <span>Support</span>

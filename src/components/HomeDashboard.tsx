@@ -49,18 +49,26 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
         <div className="relative rounded-3xl overflow-hidden border border-zinc-200 dark:border-zinc-800/90 bg-zinc-900 text-white shadow-2xl transition-all duration-500">
           
           {/* Background Video / Image preview */}
-          <div className="absolute inset-0 z-0">
-            <video
-              key={activeSlide.id}
-              src={activeSlide.videoUrl}
-              poster={activeSlide.posterUrl}
-              autoPlay
-              loop
-              muted
-              playsInline
-              className="w-full h-full object-cover opacity-40 transition-opacity duration-700"
-            />
-            <div className="absolute inset-0 bg-gradient-to-r from-zinc-950/95 via-zinc-950/80 to-transparent" />
+          <div className="absolute inset-0 z-0 bg-zinc-950">
+            {activeSlide.videoUrl ? (
+              <video
+                key={activeSlide.id}
+                src={activeSlide.videoUrl}
+                poster={activeSlide.posterUrl}
+                autoPlay
+                loop
+                muted
+                playsInline
+                className="w-full h-full object-cover opacity-50 transition-opacity duration-700"
+              />
+            ) : (
+              <img
+                src={activeSlide.posterUrl}
+                alt={activeSlide.title}
+                className="w-full h-full object-cover opacity-40 transition-opacity duration-700"
+              />
+            )}
+            <div className="absolute inset-0 bg-gradient-to-r from-zinc-950/95 via-zinc-950/75 to-transparent" />
             <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/90 via-transparent to-transparent" />
           </div>
 
@@ -111,13 +119,13 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                 ))}
               </div>
 
-              {/* + New project button inside hero bottom right */}
+              {/* New project button inside hero bottom right */}
               <button
                 onClick={onNewProject}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-zinc-900/90 hover:bg-zinc-800 text-white font-bold text-xs sm:text-sm border border-zinc-700/80 shadow-xl backdrop-blur transition-all active:scale-95 cursor-pointer"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold text-xs sm:text-sm shadow-xl transition-all active:scale-95 cursor-pointer"
               >
-                <Plus className="w-4 h-4 text-emerald-400" />
-                <span>+ New project</span>
+                <Plus className="w-4 h-4" />
+                <span>New project</span>
               </button>
             </div>
 
@@ -137,7 +145,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
 
           <button
             onClick={onNewProject}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 font-bold text-xs transition-all shadow-md active:scale-95 cursor-pointer"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold text-xs transition-all shadow-md active:scale-95 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Create New</span>

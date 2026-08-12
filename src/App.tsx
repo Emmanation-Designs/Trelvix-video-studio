@@ -283,6 +283,7 @@ export default function App() {
         defaultTab={settingsTab}
         isDarkMode={isDarkMode}
         onToggleTheme={() => setIsDarkMode(!isDarkMode)}
+        onOpenSupport={handleOpenSupport}
       />
 
     </div>

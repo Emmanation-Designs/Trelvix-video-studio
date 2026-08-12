@@ -1230,13 +1230,13 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-                    className="px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800/90 hover:bg-zinc-200 dark:hover:bg-zinc-700 border border-zinc-200 dark:border-zinc-700 text-[10px] sm:text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 transition-all shrink-0 flex items-center gap-1 sm:gap-1.5 cursor-pointer"
+                    className="px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800/90 hover:bg-zinc-200 dark:hover:bg-zinc-700 border border-zinc-200 dark:border-zinc-700 text-[10px] sm:text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 transition-all shrink-0 flex items-center gap-1.5 cursor-pointer"
                   >
-                    <Square className="w-3 h-3 text-emerald-500" />
+                    <Settings className="w-3 h-3 text-zinc-500 dark:text-zinc-400" />
                     <span>{aspectRatio}</span>
-                    <span>•</span>
+                    <span className="text-zinc-400">•</span>
                     <span>{duration}</span>
-                    <span>•</span>
+                    <span className="text-zinc-400">•</span>
                     <span>{batchCount}</span>
                   </button>
 
